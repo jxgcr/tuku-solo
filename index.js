@@ -244,7 +244,7 @@ async function handleUpload(request, env, customer) {
     const buf = await file.arrayBuffer();
     await env.R2.put(key, buf, { httpMetadata: { contentType: file.type || "application/octet-stream" } });
     const ins = await env.DB.prepare(
-      "INSERT INTO images (customer_id, album_id, kind, r2_key, filename, mime, bytes, uploaded_at) VALUES (?,?,'file',?,?,?,?,?)"
+      "INSERT INTO images (customer_id, album_id, kind, cf_id, r2_key, filename, mime, bytes, uploaded_at) VALUES (?,?,'file','',?,?,?,?,?)"
     ).bind(customer.id, albumId, key, file.name || "file", file.type || "application/octet-stream", file.size, now).run();
     return json({
       ok: true, id: ins.meta.last_row_id, kind: "file", filename: file.name || "file",
