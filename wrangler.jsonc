@@ -2,7 +2,7 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "tuku",
 	"main": "index.js",
-	"compatibility_date": "2026-07-12",
+	"compatibility_date": "2026-07-05",
 	// 图床 SaaS：算力在 Hannah，存储用 Hannah 的 CF Images，对外走 tu.aistela.com（aistela-front 反代到本域）
 	"account_id": "2e7307f9e8cd602d0396fc1f4ef532c9",
 	"routes": [
