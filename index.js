@@ -496,6 +496,19 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 .tile .act{display:flex;gap:6px;padding:8px;flex-wrap:wrap}
 .drop{border:2px dashed var(--line);border-radius:14px;padding:26px;text-align:center;color:var(--mut);cursor:pointer;margin-bottom:16px}
 .drop.on{border-color:var(--g2);background:rgba(124,108,255,.06)}
+.setbar{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:12px;color:var(--mut);font-size:.85rem}
+.setbar .chk{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
+.setbar input[type=text],.setbar input:not([type]){padding:8px 10px}
+.prog{display:grid;gap:8px;margin-bottom:16px}
+.pitem{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:9px 12px}
+.pn{font-size:.8rem;display:flex;justify-content:space-between;gap:8px;margin-bottom:6px}
+.pn>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pct{color:var(--mut);flex-shrink:0}
+.pbar{height:6px;background:rgba(255,255,255,.08);border-radius:3px;overflow:hidden}
+.pbar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--g2),var(--g1));transition:width .2s}
+.pitem.done .pbar>i{background:var(--ok);width:100%}
+.pitem.err .pbar>i{background:var(--bad)}
+.pitem.err .pct{color:var(--bad)}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);opacity:0;background:rgba(14,16,26,.95);border:1px solid var(--line);border-radius:12px;padding:12px 16px;transition:.2s;pointer-events:none;z-index:9}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 </style></head><body><div class="bg"></div>
@@ -512,7 +525,12 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
   </div></div>
 
   <div id="appView" class="hide">
+    <div class="setbar">
+      <label class="chk"><input type="checkbox" id="cmp" checked> 图片上传前压缩（省空间/更快）</label>
+      <input id="wm" placeholder="水印文字（留空=无，仅加在图片上）" style="max-width:240px">
+    </div>
     <div class="drop" id="drop">拖文件到这里，或点击选择（图片/视频/音频/PDF/压缩包… 可多选）<input id="file" type="file" multiple class="hide"></div>
+    <div id="progress" class="prog hide"></div>
     <div class="bar" id="albumBar"></div>
     <div class="grid" id="grid"></div>
     <div id="empty" class="muted hide" style="text-align:center;padding:40px">这个相册还没有图片</div>
@@ -589,15 +607,56 @@ fileInput.addEventListener("change",function(){uploadFiles(fileInput.files);file
 drop.addEventListener("dragover",function(e){e.preventDefault();drop.classList.add("on")});
 drop.addEventListener("dragleave",function(){drop.classList.remove("on")});
 drop.addEventListener("drop",function(e){e.preventDefault();drop.classList.remove("on");uploadFiles(e.dataTransfer.files)});
+// 客户端压缩图片（canvas 缩放 + 可选水印）。非图片/GIF 原样返回。
+function compressImage(file,maxDim,quality,wm){
+  return new Promise(function(resolve){
+    if(!/^image\//.test(file.type)||file.type==="image/gif"){resolve(file);return}
+    var url=URL.createObjectURL(file),img=new Image();
+    img.onload=function(){
+      URL.revokeObjectURL(url);
+      var w=img.width,h=img.height,scale=Math.min(1,maxDim/Math.max(w,h));
+      var cw=Math.max(1,Math.round(w*scale)),ch=Math.max(1,Math.round(h*scale));
+      var cv=document.createElement("canvas");cv.width=cw;cv.height=ch;
+      var ctx=cv.getContext("2d");ctx.drawImage(img,0,0,cw,ch);
+      if(wm){var fs=Math.max(14,Math.round(cw/26));ctx.font=fs+"px sans-serif";ctx.textAlign="right";ctx.textBaseline="bottom";ctx.lineWidth=Math.max(2,fs/8);ctx.strokeStyle="rgba(0,0,0,.45)";ctx.fillStyle="rgba(255,255,255,.82)";ctx.strokeText(wm,cw-12,ch-10);ctx.fillText(wm,cw-12,ch-10)}
+      cv.toBlob(function(b){
+        if(!b||(b.size>=file.size&&!wm)){resolve(file);return}
+        resolve(new File([b],file.name.replace(/\.(png|webp|bmp|jpeg)$/i,".jpg"),{type:"image/jpeg"}));
+      },"image/jpeg",quality);
+    };
+    img.onerror=function(){URL.revokeObjectURL(url);resolve(file)};
+    img.src=url;
+  });
+}
+// 带进度的上传（XHR）
+function xhrUpload(file,albumId,onprog){
+  return new Promise(function(resolve,reject){
+    var fd=new FormData();fd.append("file",file);if(albumId)fd.append("album_id",albumId);
+    var x=new XMLHttpRequest();x.open("POST","/api/upload");x.setRequestHeader("authorization","Bearer "+TOKEN);
+    x.upload.onprogress=function(e){if(e.lengthComputable&&onprog)onprog(e.loaded/e.total)};
+    x.onload=function(){var d={};try{d=JSON.parse(x.responseText)}catch(e){}if(x.status>=200&&x.status<300)resolve(d);else{if(x.status===401)logout();reject(new Error(d.error||("HTTP "+x.status)))}};
+    x.onerror=function(){reject(new Error("网络错误"))};
+    x.send(fd);
+  });
+}
 function uploadFiles(files){
   files=Array.prototype.slice.call(files||[]);if(!files.length)return;
+  var pc=$("progress");pc.classList.remove("hide");pc.innerHTML="";
+  var doCompress=$("cmp").checked,wm=$("wm").value.trim();
+  var albumId=(CUR_ALBUM!=="all"&&CUR_ALBUM!=="none")?CUR_ALBUM:null;
   var done=0,fail=0;
-  var next=function(i){
-    if(i>=files.length){toast("上传完成 "+done+" 张"+(fail?("，失败 "+fail):""));loadMe();loadAlbums().then(loadImages);return}
-    var fd=new FormData();fd.append("file",files[i]);if(CUR_ALBUM!=="all"&&CUR_ALBUM!=="none")fd.append("album_id",CUR_ALBUM);
-    api("/api/upload",{method:"POST",body:fd}).then(function(){done++}).catch(function(e){fail++;toast(e.message)}).then(function(){next(i+1)});
+  var runOne=function(i){
+    if(i>=files.length){toast("完成 "+done+" 个"+(fail?("，失败 "+fail):""));loadMe();loadAlbums().then(loadImages);setTimeout(function(){if(!fail)pc.classList.add("hide")},1600);return}
+    var f=files[i];
+    var item=document.createElement("div");item.className="pitem";
+    item.innerHTML="<div class='pn'><span>"+esc(f.name)+"</span><span class='pct'>0%</span></div><div class='pbar'><i></i></div>";
+    pc.appendChild(item);
+    var bar=item.querySelector("i"),pct=item.querySelector(".pct");
+    (doCompress?compressImage(f,2560,0.85,wm):Promise.resolve(f)).then(function(uf){
+      return xhrUpload(uf,albumId,function(p){var v=Math.round(p*100);bar.style.width=v+"%";pct.textContent=v+"%"});
+    }).then(function(){done++;item.classList.add("done");pct.textContent="完成"}).catch(function(e){fail++;item.classList.add("err");pct.textContent=e.message}).then(function(){runOne(i+1)});
   };
-  toast("上传中…");next(0);
+  toast("上传中…");runOne(0);
 }
 if(TOKEN)enterApp();
 </script></body></html>`;
