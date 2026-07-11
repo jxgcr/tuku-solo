@@ -10,7 +10,7 @@
 	],
 	"observability": { "enabled": true },
 	"d1_databases": [
-		{ "binding": "DB", "database_name": "tuku-db", "database_id": "TODO_运行 wrangler d1 create tuku-db 后把 id 填这里" }
+		{ "binding": "DB", "database_name": "tuku-db", "database_id": "11a4016a-0596-4595-9bde-8afeb90a1912" }
 	],
 	"durable_objects": {
 		"bindings": [{ "name": "AUTH_LIMITER", "class_name": "AuthLimiter" }]
