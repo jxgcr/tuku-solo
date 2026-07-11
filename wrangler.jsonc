@@ -12,6 +12,10 @@
 	"d1_databases": [
 		{ "binding": "DB", "database_name": "tuku-db", "database_id": "11a4016a-0596-4595-9bde-8afeb90a1912" }
 	],
+	// 文件床：非图片文件（视频/音频/PDF/压缩包/任意）存 R2；图片仍走 CF Images
+	"r2_buckets": [
+		{ "binding": "R2", "bucket_name": "tuku-files" }
+	],
 	"durable_objects": {
 		"bindings": [{ "name": "AUTH_LIMITER", "class_name": "AuthLimiter" }]
 	},

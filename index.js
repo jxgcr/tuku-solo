@@ -2,13 +2,17 @@
 // 账号 Hannah；图片存 Cloudflare Images；元数据存 D1(DB)；卡密来自畅密(changmi)
 // 机密(wrangler secret)：CF_IMAGES_TOKEN、SESSION_SECRET、APP_KEY_TU_BASIC、APP_KEY_TU_PRO
 const VERSION = "tuku-v1-20260712";
-const MAX_SIZE = 10 * 1024 * 1024; // CF Images 单张上限 10MB
+const MAX_SIZE = 10 * 1024 * 1024; // CF Images 图片单张上限 10MB
+const MAX_FILE = 100 * 1024 * 1024; // 非图片单文件上限 100MB（更大走直传，二期再说）
+const GB = 1073741824;
 const DEFAULT_SESSION_TTL = 7 * 24 * 3600;
-// 档位：张数上限（价格是运营侧的事，这里只管容量闸）。改档位改这里，重新部署即可。
+// 档位：容量上限（字节）。价格是运营侧的事，这里只管容量闸。改档位改这里重新部署。
 const TIERS = {
-  basic: { imgLimit: 3000, label: "图床-基础" },
-  pro: { imgLimit: 30000, label: "图床-专业" },
+  basic: { byteLimit: 5 * GB, label: "图床-基础" },
+  pro: { byteLimit: 50 * GB, label: "图床-专业" },
 };
+function fmtGB(b) { const g = Number(b) / GB; return (g >= 10 || g === Math.floor(g) ? g.toFixed(0) : g.toFixed(1)) + "GB"; }
+function safeName(n) { return String(n || "file").replace(/[^\w.\-]/g, "_").slice(-80) || "file"; }
 
 /* ---------- 基础工具 ---------- */
 function json(data, status = 200) {
@@ -138,6 +142,10 @@ async function countImages(env, cid) {
   const r = await env.DB.prepare("SELECT COUNT(*) AS n FROM images WHERE customer_id=?").bind(cid).first();
   return Number(r?.n || 0);
 }
+async function usedBytesOf(env, cid) {
+  const r = await env.DB.prepare("SELECT COALESCE(SUM(bytes),0) AS b FROM images WHERE customer_id=?").bind(cid).first();
+  return Number(r?.b || 0);
+}
 function customerActive(c) {
   if (!c || c.status !== "active") return false;
   if (c.expires_at && Number(c.expires_at) <= Math.floor(Date.now() / 1000)) return false;
@@ -184,8 +192,8 @@ async function handleLogin(request, env) {
   const now = Math.floor(Date.now() / 1000);
   const pwHash = await hashPassword(password);
   const ins = await env.DB.prepare(
-    "INSERT INTO customers (card, tier, password_hash, img_limit, expires_at, status, created_at) VALUES (?,?,?,?,?,'active',?)"
-  ).bind(card, tier, pwHash, preset.imgLimit, expiresAt, now).run();
+    "INSERT INTO customers (card, tier, password_hash, img_limit, byte_limit, expires_at, status, created_at) VALUES (?,?,?,?,?,?,'active',?)"
+  ).bind(card, tier, pwHash, 9999999, preset.byteLimit, expiresAt, now).run();
   const cid = ins.meta.last_row_id;
   const token = await signSession(env, cid, card);
   return json({ ok: true, token, tier, firstTime: true });
@@ -193,38 +201,56 @@ async function handleLogin(request, env) {
 
 /* ---------- 上传 ---------- */
 async function handleUpload(request, env, customer) {
-  const used = await countImages(env, customer.id);
-  if (used >= customer.img_limit) return json({ error: "已达图片张数上限（" + customer.img_limit + "），请升级套餐" }, 402);
-
   const form = await request.formData();
   const file = form.get("file");
   if (!file || typeof file === "string") return json({ error: "缺少文件" }, 400);
-  if (file.size > MAX_SIZE) return json({ error: "单张超过 10MB 上限" }, 413);
+  const isImage = String(file.type || "").startsWith("image/");
+  if (isImage && file.size > MAX_SIZE) return json({ error: "图片单张超过 10MB" }, 413);
+  if (!isImage && file.size > MAX_FILE) return json({ error: "单个文件超过 100MB 上限" }, 413);
+
+  const usedBytes = await usedBytesOf(env, customer.id);
+  if (usedBytes + file.size > customer.byte_limit) {
+    return json({ error: "容量不足（上限 " + fmtGB(customer.byte_limit) + "，已用 " + fmtGB(usedBytes) + "），请删文件或升级" }, 402);
+  }
+
   let albumId = Number(form.get("album_id")) || null;
   if (albumId) {
     const a = await env.DB.prepare("SELECT id FROM albums WHERE id=? AND customer_id=?").bind(albumId, customer.id).first();
     if (!a) albumId = null;
   }
-
-  const fd = new FormData();
-  fd.append("file", file, file.name || "upload.png");
-  fd.append("requireSignedURLs", "false");
-  fd.append("metadata", JSON.stringify({ owner: String(customer.id) }));
-  const data = await imagesApi(env, "", { method: "POST", body: fd });
-  if (!data.success) return json({ error: (data.errors && data.errors[0] && data.errors[0].message) || "上传失败" }, 502);
-
-  const cfId = data.result.id;
   const now = Math.floor(Date.now() / 1000);
-  const ins = await env.DB.prepare(
-    "INSERT INTO images (customer_id, album_id, cf_id, filename, bytes, uploaded_at) VALUES (?,?,?,?,?,?)"
-  ).bind(customer.id, albumId, cfId, file.name || "", file.size, now).run();
 
+  if (isImage) {
+    const fd = new FormData();
+    fd.append("file", file, file.name || "upload.png");
+    fd.append("requireSignedURLs", "false");
+    fd.append("metadata", JSON.stringify({ owner: String(customer.id) }));
+    const data = await imagesApi(env, "", { method: "POST", body: fd });
+    if (!data.success) return json({ error: (data.errors && data.errors[0] && data.errors[0].message) || "图片上传失败" }, 502);
+    const cfId = data.result.id;
+    const ins = await env.DB.prepare(
+      "INSERT INTO images (customer_id, album_id, kind, cf_id, filename, mime, bytes, uploaded_at) VALUES (?,?,'image',?,?,?,?,?)"
+    ).bind(customer.id, albumId, cfId, file.name || "", file.type || "image/*", file.size, now).run();
+    return json({
+      ok: true, id: ins.meta.last_row_id, kind: "image",
+      link: (env.PUBLIC_BASE || "") + "/i/" + cfId,
+      thumb: "https://imagedelivery.net/" + env.IMAGES_HASH + "/" + cfId + "/public",
+    });
+  }
+
+  // 非图片 → R2
+  const key = customer.id + "/" + crypto.randomUUID() + "-" + safeName(file.name);
+  try {
+    await env.R2.put(key, file.stream(), { httpMetadata: { contentType: file.type || "application/octet-stream" } });
+  } catch (e) {
+    return json({ error: "文件上传失败" }, 502);
+  }
+  const ins = await env.DB.prepare(
+    "INSERT INTO images (customer_id, album_id, kind, r2_key, filename, mime, bytes, uploaded_at) VALUES (?,?,'file',?,?,?,?,?)"
+  ).bind(customer.id, albumId, key, file.name || "file", file.type || "application/octet-stream", file.size, now).run();
   return json({
-    ok: true,
-    id: ins.meta.last_row_id,
-    cf_id: cfId,
-    link: (env.PUBLIC_BASE || "") + "/i/" + cfId,
-    thumb: "https://imagedelivery.net/" + env.IMAGES_HASH + "/" + cfId + "/public",
+    ok: true, id: ins.meta.last_row_id, kind: "file", filename: file.name || "file",
+    link: (env.PUBLIC_BASE || "") + "/f/" + ins.meta.last_row_id,
   });
 }
 
@@ -239,17 +265,22 @@ async function handleList(request, env, customer, url) {
   } else {
     rows = await env.DB.prepare("SELECT * FROM images WHERE customer_id=? ORDER BY id DESC LIMIT 500").bind(customer.id).all();
   }
-  const images = (rows.results || []).map((im) => ({
-    id: im.id, cf_id: im.cf_id, filename: im.filename, album_id: im.album_id, uploaded_at: im.uploaded_at,
-    link: (env.PUBLIC_BASE || "") + "/i/" + im.cf_id,
-    thumb: "https://imagedelivery.net/" + env.IMAGES_HASH + "/" + im.cf_id + "/public",
-  }));
+  const images = (rows.results || []).map((im) => {
+    const isImage = im.kind !== "file";
+    return {
+      id: im.id, kind: isImage ? "image" : "file", filename: im.filename, mime: im.mime, bytes: im.bytes,
+      album_id: im.album_id, uploaded_at: im.uploaded_at,
+      link: isImage ? (env.PUBLIC_BASE || "") + "/i/" + im.cf_id : (env.PUBLIC_BASE || "") + "/f/" + im.id,
+      thumb: isImage ? "https://imagedelivery.net/" + env.IMAGES_HASH + "/" + im.cf_id + "/public" : null,
+    };
+  });
   return json({ images });
 }
 async function handleDeleteImg(request, env, customer, id) {
   const row = await env.DB.prepare("SELECT * FROM images WHERE id=? AND customer_id=?").bind(id, customer.id).first();
-  if (!row) return json({ error: "图片不存在" }, 404);
-  await imagesApi(env, "/" + encodeURIComponent(row.cf_id), { method: "DELETE" });
+  if (!row) return json({ error: "文件不存在" }, 404);
+  if (row.kind === "file" && row.r2_key) await env.R2.delete(row.r2_key);
+  else if (row.cf_id) await imagesApi(env, "/" + encodeURIComponent(row.cf_id), { method: "DELETE" });
   await env.DB.prepare("DELETE FROM images WHERE id=?").bind(id).run();
   return json({ ok: true });
 }
@@ -286,10 +317,11 @@ async function handleMoveImg(request, env, customer, id) {
   return json({ ok: true });
 }
 async function handleMe(request, env, customer) {
-  const used = await countImages(env, customer.id);
+  const count = await countImages(env, customer.id);
+  const usedBytes = await usedBytesOf(env, customer.id);
   return json({
     card: customer.card, tier: customer.tier, tierLabel: (TIERS[customer.tier] || {}).label || customer.tier,
-    used, limit: customer.img_limit,
+    count, usedBytes, byteLimit: customer.byte_limit, usedGB: fmtGB(usedBytes), limitGB: fmtGB(customer.byte_limit),
     expiresAt: customer.expires_at ? new Date(customer.expires_at * 1000).toISOString() : null,
   });
 }
@@ -308,6 +340,31 @@ async function serveImage(request, env, cfId) {
   out.headers.set("x-content-type-options", "nosniff");
   request.__ctx && request.__ctx.waitUntil(caches.default.put(cacheKey, out.clone()));
   return out;
+}
+
+/* ---------- 文件直链 /f/:id（公开，R2；支持 Range 让视频/音频可拖动播放） ---------- */
+async function serveFile(request, env, id) {
+  const row = await env.DB.prepare("SELECT r2_key, filename, mime FROM images WHERE id=? AND kind='file'").bind(id).first();
+  if (!row || !row.r2_key) return new Response("Not Found", { status: 404 });
+  const hasRange = !!request.headers.get("range");
+  const obj = await env.R2.get(row.r2_key, hasRange ? { range: request.headers } : undefined);
+  if (!obj) return new Response("Not Found", { status: 404 });
+  const headers = new Headers();
+  obj.writeHttpMetadata(headers);
+  if (obj.httpEtag) headers.set("etag", obj.httpEtag);
+  headers.set("content-type", row.mime || headers.get("content-type") || "application/octet-stream");
+  headers.set("cache-control", "public, max-age=3600");
+  headers.set("accept-ranges", "bytes");
+  if (new URL(request.url).searchParams.get("dl")) headers.set("content-disposition", "attachment; filename*=UTF-8''" + encodeURIComponent(row.filename || "file"));
+  if (obj.range) {
+    const off = obj.range.offset || 0;
+    const len = obj.range.length != null ? obj.range.length : (obj.size - off);
+    headers.set("content-range", "bytes " + off + "-" + (off + len - 1) + "/" + obj.size);
+    headers.set("content-length", String(len));
+    return new Response(obj.body, { status: 206, headers });
+  }
+  headers.set("content-length", String(obj.size));
+  return new Response(obj.body, { status: 200, headers });
 }
 
 /* ---------- 登录暴破限流 Durable Object ---------- */
@@ -354,6 +411,9 @@ export default {
     // 图片直链（公开）
     const im = path.match(/^\/i\/([A-Za-z0-9_-]+)$/);
     if (im) return serveImage(request, env, im[1]);
+    // 文件直链（公开，R2）
+    const fm = path.match(/^\/f\/(\d+)$/);
+    if (fm) return serveFile(request, env, Number(fm[1]));
 
     try {
       // 登录/开通：带暴破锁
@@ -427,6 +487,10 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
 .tile{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
 .tile img{width:100%;height:120px;object-fit:cover;display:block;background:#000}
+.filebox{height:120px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:8px;background:#0a0b10}
+.ficon{font-size:2.4rem;line-height:1}
+.fname{font-size:.72rem;color:var(--mut);text-align:center;word-break:break-all;max-height:2.3em;overflow:hidden}
+.dlbtn{text-decoration:none;text-align:center;line-height:1.9;display:inline-block}
 .tile .act{display:flex;gap:6px;padding:8px;flex-wrap:wrap}
 .drop{border:2px dashed var(--line);border-radius:14px;padding:26px;text-align:center;color:var(--mut);cursor:pointer;margin-bottom:16px}
 .drop.on{border-color:var(--g2);background:rgba(124,108,255,.06)}
@@ -446,7 +510,7 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
   </div></div>
 
   <div id="appView" class="hide">
-    <div class="drop" id="drop">拖图片到这里，或点击选择（可多选，单张≤10MB）<input id="file" type="file" accept="image/*" multiple class="hide"></div>
+    <div class="drop" id="drop">拖文件到这里，或点击选择（图片/视频/音频/PDF/压缩包… 可多选）<input id="file" type="file" multiple class="hide"></div>
     <div class="bar" id="albumBar"></div>
     <div class="grid" id="grid"></div>
     <div id="empty" class="muted hide" style="text-align:center;padding:40px">这个相册还没有图片</div>
@@ -459,6 +523,8 @@ var CUR_ALBUM="all";
 var ALBUMS=[];
 function $(id){return document.getElementById(id)}
 function toast(m){var t=$("toast");t.textContent=m;t.classList.add("show");setTimeout(function(){t.classList.remove("show")},2200)}
+function esc(s){return String(s==null?"":s).replace(/[<>&]/g,function(c){return c==="<"?"&lt;":c===">"?"&gt;":"&amp;"})}
+function fileIcon(im){var m=String(im.mime||"");if(m.indexOf("video")===0)return"🎬";if(m.indexOf("audio")===0)return"🎵";if(m.indexOf("pdf")>=0)return"📄";if(/zip|rar|7z|compress|tar/.test(m))return"🗜️";return"📎"}
 function api(path,opts){opts=opts||{};opts.headers=Object.assign({authorization:"Bearer "+TOKEN},opts.headers||{});return fetch(path,opts).then(function(r){return r.json().then(function(d){if(r.status===401){logout();throw new Error(d.error||"未登录")}if(!r.ok)throw new Error(d.error||("HTTP "+r.status));return d})})}
 function logout(){sessionStorage.removeItem("tuku_token");TOKEN="";$("appView").classList.add("hide");$("loginView").classList.remove("hide");$("who").textContent=""}
 $("loginBtn").addEventListener("click",doLogin);
@@ -474,7 +540,7 @@ function doLogin(){
   })}).catch(function(e){$("loginErr").textContent="网络错误"});
 }
 function enterApp(){$("loginView").classList.add("hide");$("appView").classList.remove("hide");loadMe();loadAlbums().then(loadImages)}
-function loadMe(){api("/api/me").then(function(d){$("who").textContent=d.tierLabel+" · 已用 "+d.used+"/"+d.limit+" 张"+(d.expiresAt?" · 到期 "+d.expiresAt.slice(0,10):"")}).catch(function(){})}
+function loadMe(){api("/api/me").then(function(d){$("who").textContent=d.tierLabel+" · 已用 "+d.usedGB+"/"+d.limitGB+"（"+d.count+" 个）"+(d.expiresAt?" · 到期 "+d.expiresAt.slice(0,10):"")}).catch(function(){})}
 function loadAlbums(){return api("/api/albums").then(function(d){ALBUMS=d.albums||[];renderAlbumBar()})}
 function renderAlbumBar(){
   var bar=$("albumBar");bar.innerHTML="";
@@ -494,12 +560,15 @@ function loadImages(){
     if(!d.images.length){$("empty").classList.remove("hide")}else{$("empty").classList.add("hide")}
     d.images.forEach(function(im){
       var t=document.createElement("div");t.className="tile";
-      var img=document.createElement("img");img.src=im.thumb;img.loading="lazy";t.appendChild(img);
+      if(im.kind==="image"){var img=document.createElement("img");img.src=im.thumb;img.loading="lazy";t.appendChild(img);}
+      else{var fb=document.createElement("div");fb.className="filebox";fb.innerHTML="<div class='ficon'>"+fileIcon(im)+"</div><div class='fname'>"+esc(im.filename||"文件")+"</div>";t.appendChild(fb);}
       var act=document.createElement("div");act.className="act";
       var copy=document.createElement("button");copy.className="sm";copy.textContent="复制链接";copy.onclick=function(){navigator.clipboard.writeText(im.link).then(function(){toast("链接已复制")})};
-      var mv=document.createElement("button");mv.className="sm";mv.textContent="移动";mv.onclick=function(){moveImg(im.id)};
-      var del=document.createElement("button");del.className="sm danger";del.textContent="删除";del.onclick=function(){delImg(im.id)};
-      act.appendChild(copy);act.appendChild(mv);act.appendChild(del);t.appendChild(act);g.appendChild(t);
+      act.appendChild(copy);
+      if(im.kind==="file"){var dl=document.createElement("a");dl.className="sm dlbtn";dl.textContent="下载";dl.href=im.link+"?dl=1";act.appendChild(dl);}
+      var mv=document.createElement("button");mv.className="sm";mv.textContent="移动";mv.onclick=function(){moveImg(im.id)};act.appendChild(mv);
+      var del=document.createElement("button");del.className="sm danger";del.textContent="删除";del.onclick=function(){delImg(im.id)};act.appendChild(del);
+      t.appendChild(act);g.appendChild(t);
     });
   }).catch(function(e){toast(e.message)});
 }
