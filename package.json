@@ -1,0 +1,9 @@
+{
+  "name": "tuku",
+  "version": "1.0.0",
+  "private": true,
+  "description": "图床 SaaS：多租户图片托管（Hannah + CF Images），对外 tu.aistela.com",
+  "scripts": {
+    "verify": "node scripts/verify.mjs"
+  }
+}

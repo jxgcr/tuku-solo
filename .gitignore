@@ -1,0 +1,8 @@
+node_modules/
+.wrangler/
+*.tmp
+*.tmp.*
+*.bak
+令牌*.txt
+secrets*.json
+.dev.vars

@@ -1,0 +1,35 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "tuku",
+	"main": "index.js",
+	"compatibility_date": "2026-07-12",
+	// 图床 SaaS：算力在 Hannah，存储用 Hannah 的 CF Images，对外走 tu.aistela.com（aistela-front 反代到本域）
+	"account_id": "2e7307f9e8cd602d0396fc1f4ef532c9",
+	"routes": [
+		{ "pattern": "tuku.5209696.xyz", "custom_domain": true }
+	],
+	"observability": { "enabled": true },
+	"d1_databases": [
+		{ "binding": "DB", "database_name": "tuku-db", "database_id": "TODO_运行 wrangler d1 create tuku-db 后把 id 填这里" }
+	],
+	"durable_objects": {
+		"bindings": [{ "name": "AUTH_LIMITER", "class_name": "AuthLimiter" }]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["AuthLimiter"] }
+	],
+	"vars": {
+		"ACCOUNT_ID": "2e7307f9e8cd602d0396fc1f4ef532c9",
+		"IMAGES_HASH": "6tUiZyVTUxD3Ml-_t4uvpQ",
+		"CHANGMI_URL": "https://changmi.5209696.xyz",
+		"PUBLIC_BASE": "https://tu.aistela.com",
+		"SESSION_TTL_SECONDS": "604800",
+		"AUTH_MAX_FAILURES": "8",
+		"AUTH_LOCK_SECONDS": "900"
+	}
+	// 机密（wrangler secret put，不进仓库）：
+	//   CF_IMAGES_TOKEN   Hannah 的 Images:Edit 令牌
+	//   SESSION_SECRET    会话签名随机串
+	//   APP_KEY_TU_BASIC  畅密「图床-basic」应用 app_key
+	//   APP_KEY_TU_PRO    畅密「图床-pro」应用 app_key
+}
