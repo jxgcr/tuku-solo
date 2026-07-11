@@ -252,7 +252,7 @@ async function handleUpload(request, env, customer) {
     });
   } catch (e) {
     console.log("file upload fail: " + (e && e.message ? e.message : e));
-    return json({ error: "文件上传失败：" + (e && e.message ? e.message : String(e)) }, 502);
+    return json({ error: "文件上传失败，请稍后重试" }, 502);
   }
 }
 
@@ -358,7 +358,7 @@ async function serveFile(request, env, id) {
   headers.set("cache-control", "public, max-age=3600");
   headers.set("accept-ranges", "bytes");
   if (new URL(request.url).searchParams.get("dl")) headers.set("content-disposition", "attachment; filename*=UTF-8''" + encodeURIComponent(row.filename || "file"));
-  if (obj.range) {
+  if (hasRange && obj.range) {
     const off = obj.range.offset || 0;
     const len = obj.range.length != null ? obj.range.length : (obj.size - off);
     headers.set("content-range", "bytes " + off + "-" + (off + len - 1) + "/" + obj.size);
