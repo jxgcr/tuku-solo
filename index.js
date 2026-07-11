@@ -256,6 +256,59 @@ async function handleUpload(request, env, customer) {
   }
 }
 
+/* ---------- 大文件分片上传（R2 multipart，绕过 Worker 100MB 限制） ---------- */
+async function handleMpuCreate(request, env, customer) {
+  const body = await request.json().catch(() => ({}));
+  const size = Number(body.size) || 0;
+  if (size <= 0) return json({ error: "缺少文件大小" }, 400);
+  if (size > 5 * 1024 * 1024 * 1024) return json({ error: "单个文件超过 5GB 上限" }, 413);
+  const usedBytes = await usedBytesOf(env, customer.id);
+  if (usedBytes + size > customer.byte_limit) return json({ error: "容量不足（上限 " + fmtGB(customer.byte_limit) + "，已用 " + fmtGB(usedBytes) + "）" }, 402);
+  const key = customer.id + "/" + crypto.randomUUID() + "-" + safeName(body.filename);
+  const mpu = await env.R2.createMultipartUpload(key, { httpMetadata: { contentType: body.mime || "application/octet-stream" } });
+  return json({ ok: true, key, uploadId: mpu.uploadId });
+}
+async function handleMpuPart(request, env, customer, url) {
+  const key = url.searchParams.get("key") || "";
+  const uploadId = url.searchParams.get("uploadId") || "";
+  const partNum = Number(url.searchParams.get("part")) || 0;
+  if (!key.startsWith(customer.id + "/") || !uploadId || partNum < 1) return json({ error: "参数错误" }, 400);
+  try {
+    const mpu = env.R2.resumeMultipartUpload(key, uploadId);
+    const buf = await request.arrayBuffer();
+    const part = await mpu.uploadPart(partNum, buf);
+    return json({ ok: true, part: part.partNumber, etag: part.etag });
+  } catch (e) {
+    console.log("mpu part fail: " + (e && e.message ? e.message : e));
+    return json({ error: "分片上传失败" }, 502);
+  }
+}
+async function handleMpuComplete(request, env, customer) {
+  const body = await request.json().catch(() => ({}));
+  const key = String(body.key || "");
+  const uploadId = String(body.uploadId || "");
+  if (!key.startsWith(customer.id + "/") || !uploadId) return json({ error: "参数错误" }, 400);
+  const parts = (Array.isArray(body.parts) ? body.parts : []).map((p) => ({ partNumber: Number(p.part || p.partNumber), etag: p.etag }));
+  if (!parts.length) return json({ error: "没有分片" }, 400);
+  try {
+    const mpu = env.R2.resumeMultipartUpload(key, uploadId);
+    await mpu.complete(parts);
+  } catch (e) {
+    console.log("mpu complete fail: " + (e && e.message ? e.message : e));
+    return json({ error: "合并失败，请重试" }, 502);
+  }
+  let albumId = Number(body.album_id) || null;
+  if (albumId) {
+    const a = await env.DB.prepare("SELECT id FROM albums WHERE id=? AND customer_id=?").bind(albumId, customer.id).first();
+    if (!a) albumId = null;
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const ins = await env.DB.prepare(
+    "INSERT INTO images (customer_id, album_id, kind, cf_id, r2_key, filename, mime, bytes, uploaded_at) VALUES (?,?,'file','',?,?,?,?,?)"
+  ).bind(customer.id, albumId, key, String(body.filename || "file"), String(body.mime || "application/octet-stream"), Number(body.size) || 0, now).run();
+  return json({ ok: true, id: ins.meta.last_row_id, kind: "file", link: (env.PUBLIC_BASE || "") + "/f/" + ins.meta.last_row_id });
+}
+
 /* ---------- 列表 / 删除 / 相册 ---------- */
 async function handleList(request, env, customer, url) {
   const albumParam = url.searchParams.get("album_id");
@@ -441,6 +494,9 @@ export default {
 
       if (request.method === "GET" && path === "/api/me") return handleMe(request, env, customer);
       if (request.method === "POST" && path === "/api/upload") return await handleUpload(request, env, customer);
+      if (request.method === "POST" && path === "/api/mpu/create") return await handleMpuCreate(request, env, customer);
+      if (request.method === "POST" && path === "/api/mpu/part") return await handleMpuPart(request, env, customer, url);
+      if (request.method === "POST" && path === "/api/mpu/complete") return await handleMpuComplete(request, env, customer);
       if (request.method === "GET" && path === "/api/list") return handleList(request, env, customer, url);
       if (request.method === "GET" && path === "/api/albums") return handleAlbums(request, env, customer);
       if (request.method === "POST" && path === "/api/albums") return handleCreateAlbum(request, env, customer);
@@ -639,6 +695,29 @@ function xhrUpload(file,albumId,onprog){
     x.send(fd);
   });
 }
+// 大文件分片上传（>90MB 走这里，绕过 100MB 限制）
+function multipartUpload(file,albumId,onprog){
+  var CHUNK=40*1024*1024;
+  var key,uploadId,parts=[];
+  return api("/api/mpu/create",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({filename:file.name,mime:file.type||"application/octet-stream",size:file.size,album_id:albumId})}).then(function(init){
+    key=init.key;uploadId=init.uploadId;
+    var total=Math.ceil(file.size/CHUNK),uploaded=0;
+    function doPart(n){
+      if(n>total)return Promise.resolve();
+      var start=(n-1)*CHUNK,chunk=file.slice(start,Math.min(file.size,start+CHUNK));
+      return new Promise(function(resolve,reject){
+        var x=new XMLHttpRequest();x.open("POST","/api/mpu/part?key="+encodeURIComponent(key)+"&uploadId="+encodeURIComponent(uploadId)+"&part="+n);x.setRequestHeader("authorization","Bearer "+TOKEN);
+        x.upload.onprogress=function(e){if(e.lengthComputable&&onprog)onprog(Math.min(1,(uploaded+e.loaded)/file.size))};
+        x.onload=function(){var d={};try{d=JSON.parse(x.responseText)}catch(e){}if(x.status>=200&&x.status<300){parts.push({part:d.part,etag:d.etag});uploaded=Math.min(file.size,n*CHUNK);if(onprog)onprog(uploaded/file.size);resolve()}else{if(x.status===401)logout();reject(new Error(d.error||("分片"+n+"失败")))}};
+        x.onerror=function(){reject(new Error("网络错误"))};
+        x.send(chunk);
+      }).then(function(){return doPart(n+1)});
+    }
+    return doPart(1);
+  }).then(function(){
+    return api("/api/mpu/complete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({key:key,uploadId:uploadId,parts:parts,filename:file.name,mime:file.type||"application/octet-stream",size:file.size,album_id:albumId})});
+  });
+}
 function uploadFiles(files){
   files=Array.prototype.slice.call(files||[]);if(!files.length)return;
   var pc=$("progress");pc.classList.remove("hide");pc.innerHTML="";
@@ -653,7 +732,8 @@ function uploadFiles(files){
     pc.appendChild(item);
     var bar=item.querySelector("i"),pct=item.querySelector(".pct");
     (doCompress?compressImage(f,2560,0.85,wm):Promise.resolve(f)).then(function(uf){
-      return xhrUpload(uf,albumId,function(p){var v=Math.round(p*100);bar.style.width=v+"%";pct.textContent=v+"%"});
+      var prog=function(p){var v=Math.round(p*100);bar.style.width=v+"%";pct.textContent=v+"%"};
+      return uf.size>90*1024*1024 ? multipartUpload(uf,albumId,prog) : xhrUpload(uf,albumId,prog);
     }).then(function(){done++;item.classList.add("done");pct.textContent="完成"}).catch(function(e){fail++;item.classList.add("err");pct.textContent=e.message}).then(function(){runOne(i+1)});
   };
   toast("上传中…");runOne(0);
