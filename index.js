@@ -241,17 +241,19 @@ async function handleUpload(request, env, customer) {
   // 非图片 → R2
   const key = customer.id + "/" + crypto.randomUUID() + "-" + safeName(file.name);
   try {
-    await env.R2.put(key, file.stream(), { httpMetadata: { contentType: file.type || "application/octet-stream" } });
+    const buf = await file.arrayBuffer();
+    await env.R2.put(key, buf, { httpMetadata: { contentType: file.type || "application/octet-stream" } });
+    const ins = await env.DB.prepare(
+      "INSERT INTO images (customer_id, album_id, kind, r2_key, filename, mime, bytes, uploaded_at) VALUES (?,?,'file',?,?,?,?,?)"
+    ).bind(customer.id, albumId, key, file.name || "file", file.type || "application/octet-stream", file.size, now).run();
+    return json({
+      ok: true, id: ins.meta.last_row_id, kind: "file", filename: file.name || "file",
+      link: (env.PUBLIC_BASE || "") + "/f/" + ins.meta.last_row_id,
+    });
   } catch (e) {
-    return json({ error: "文件上传失败" }, 502);
+    console.log("file upload fail: " + (e && e.message ? e.message : e));
+    return json({ error: "文件上传失败：" + (e && e.message ? e.message : String(e)) }, 502);
   }
-  const ins = await env.DB.prepare(
-    "INSERT INTO images (customer_id, album_id, kind, r2_key, filename, mime, bytes, uploaded_at) VALUES (?,?,'file',?,?,?,?,?)"
-  ).bind(customer.id, albumId, key, file.name || "file", file.type || "application/octet-stream", file.size, now).run();
-  return json({
-    ok: true, id: ins.meta.last_row_id, kind: "file", filename: file.name || "file",
-    link: (env.PUBLIC_BASE || "") + "/f/" + ins.meta.last_row_id,
-  });
 }
 
 /* ---------- 列表 / 删除 / 相册 ---------- */
@@ -438,7 +440,7 @@ export default {
       const customer = auth.customer;
 
       if (request.method === "GET" && path === "/api/me") return handleMe(request, env, customer);
-      if (request.method === "POST" && path === "/api/upload") return handleUpload(request, env, customer);
+      if (request.method === "POST" && path === "/api/upload") return await handleUpload(request, env, customer);
       if (request.method === "GET" && path === "/api/list") return handleList(request, env, customer, url);
       if (request.method === "GET" && path === "/api/albums") return handleAlbums(request, env, customer);
       if (request.method === "POST" && path === "/api/albums") return handleCreateAlbum(request, env, customer);
