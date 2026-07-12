@@ -33,12 +33,13 @@ function htmlResponse(body, env) {
   // 每次请求生成随机 nonce，注入 <script nonce> 并写进 CSP，从而去掉 script-src 的 'unsafe-inline'
   // （脚本仍内联，不拆文件、无缓存坑；页面 no-store 不缓存，nonce 逐请求刷新）。
   const nonce = btoa(String.fromCharCode.apply(null, crypto.getRandomValues(new Uint8Array(16)))).replace(/[+/=]/g, "");
-  const html = String(body).split("__CSP_NONCE__").join(nonce).split("__BUY_URL__").join(buyUrl(env));
+  const html = String(body).split("__CSP_NONCE__").join(nonce).split("__BUY_URL__").join(buyUrl(env)).split("__TURNSTILE_SITE__").join(env.TURNSTILE_SITE_KEY || "");
   return new Response(html, {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      "content-security-policy": "default-src 'self'; script-src 'self' 'nonce-" + nonce + "'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://imagedelivery.net; connect-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'",
+      // 放行 Cloudflare Turnstile（人机验证）的脚本/iframe/连接
+      "content-security-policy": "default-src 'self'; script-src 'self' 'nonce-" + nonce + "' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://imagedelivery.net; connect-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; base-uri 'none'; form-action 'self'; object-src 'none'",
       "x-content-type-options": "nosniff",
       "x-frame-options": "DENY",
       "referrer-policy": "no-referrer",
@@ -47,6 +48,33 @@ function htmlResponse(body, env) {
 }
 function clientIp(request) {
   return request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for") || "0.0.0.0";
+}
+// 购买页 /buy：手动收款(自己的微信/支付宝码)。收款码/价格/联系方式全走 wrangler vars，改配置不动代码。
+// 单独的响应构造：CSP 放开 img-src 到 https:，好让收款码图片(不管你传哪)都能显示。
+function payVar(env, k, d) { return (env && env[k]) ? String(env[k]) : d; }
+function buyPageResponse(env) {
+  const nonce = btoa(String.fromCharCode.apply(null, crypto.getRandomValues(new Uint8Array(16)))).replace(/[+/=]/g, "");
+  const rep = {
+    "__CSP_NONCE__": nonce,
+    "__PAY_WX_QR__": payVar(env, "PAY_WX_QR", ""),
+    "__PAY_ALI_QR__": payVar(env, "PAY_ALI_QR", ""),
+    "__PAY_CONTACT__": payVar(env, "PAY_CONTACT", "（运营者未设置联系方式）"),
+    "__PRICE_BASIC__": payVar(env, "PRICE_BASIC", "联系客服"),
+    "__PRICE_PRO__": payVar(env, "PRICE_PRO", "联系客服"),
+    "__PUBLIC_BASE__": env.PUBLIC_BASE || "",
+  };
+  let html = BUY_HTML;
+  for (const k in rep) html = html.split(k).join(rep[k]);
+  return new Response(html, {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "content-security-policy": "default-src 'self'; script-src 'self' 'nonce-" + nonce + "'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+      "referrer-policy": "no-referrer",
+    },
+  });
 }
 function envNumber(env, key, fallback) {
   const n = Number(env[key]);
@@ -354,12 +382,26 @@ async function handleRotateApiKey(env, customer) {
   return json({ ok: true, apiKey: key, endpoint: (env.PUBLIC_BASE || "") + "/api/v1/upload" });
 }
 
-/* ---------- 免费试用开通（无卡密，按 IP 限注册防薅） ---------- */
+// Cloudflare Turnstile 人机验证：未配 TURNSTILE_SECRET 则跳过（部署后在 CF 建好验证码、填 key 才生效）
+async function verifyTurnstile(env, token, ip) {
+  if (!env.TURNSTILE_SECRET) return true;
+  if (!token) return false;
+  try {
+    const r = await fetchT("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ secret: env.TURNSTILE_SECRET, response: token, remoteip: ip }),
+    }, 8000);
+    const d = await r.json().catch(() => ({}));
+    return d.success === true;
+  } catch (e) { return false; }
+}
+/* ---------- 免费试用开通（无卡密，按 IP 限注册 + 人机验证 防薅） ---------- */
 async function handleFreeSignup(request, env) {
   const body = await request.json().catch(() => ({}));
   const password = String(body.password || "");
   if (password.length < 8) return json({ error: "请设至少 8 位密码" }, 400);
   const ip = clientIp(request);
+  if (!(await verifyTurnstile(env, body.cfToken, ip))) return json({ error: "请完成人机验证后再试" }, 403);
   const max = envNumber(env, "FREE_SIGNUP_MAX", 3), win = envNumber(env, "FREE_SIGNUP_WINDOW", 86400);
   const lim = limiter(env, "freesignup:" + ip);
   if (lim) {
@@ -720,6 +762,7 @@ export default {
     if (path === "/scfw") return htmlResponse(ADMIN_HTML, env);
     if (path === "/privacy") return htmlResponse(PRIVACY_HTML, env);
     if (path === "/terms") return htmlResponse(TERMS_HTML, env);
+    if (path === "/buy") return buyPageResponse(env);
 
     // 图片直链（公开）
     const im = path.match(/^\/i\/([A-Za-z0-9_-]+)$/);
@@ -1118,6 +1161,7 @@ form-data:  file=@shot.png
     <div class="muted" style="margin-bottom:12px" id="freeIntro">无需卡密。设一个密码，我们当场给你生成一个账号（500MB，图片带水印）。请记好卡号，下次凭它+密码登录。</div>
     <div id="freeForm">
       <input id="fpw" type="password" placeholder="给账号设个密码（≥8 位）" style="margin-bottom:12px">
+      <div id="cfTurnstile" style="margin-bottom:12px"></div>
       <button class="pri" id="freeBtn" style="width:100%">生成我的账号并进入</button>
       <div id="freeErr" class="muted" style="color:var(--bad);min-height:20px;margin-top:6px"></div>
     </div>
@@ -1237,7 +1281,15 @@ function logout(){sessionStorage.removeItem("tuku_token");TOKEN="";$("appShell")
 $("loginBtn").addEventListener("click",doLogin);
 $("pw").addEventListener("keydown",function(e){if(e.key==="Enter")doLogin()});
 function openLogin(){show("loginOverlay");setTimeout(function(){$("card").focus()},60)}
-function openFree(){$("freeForm").classList.remove("hide");$("freeDone").classList.add("hide");$("fpw").value="";$("freeErr").textContent="";show("freeOverlay");setTimeout(function(){$("fpw").focus()},60)}
+var TURNSTILE_SITE="__TURNSTILE_SITE__",TS_ID=null;
+function tsActive(){return TURNSTILE_SITE&&TURNSTILE_SITE.indexOf("__")!==0}
+function loadTurnstile(){
+  if(!tsActive())return;
+  function render(){if(!window.turnstile)return;if(TS_ID===null){TS_ID=window.turnstile.render("#cfTurnstile",{sitekey:TURNSTILE_SITE})}else{window.turnstile.reset(TS_ID)}}
+  if(window.turnstile){render();return}
+  if(!window.__tsLoading){window.__tsLoading=true;var s=document.createElement("script");s.src="https://challenges.cloudflare.com/turnstile/v0/api.js";s.async=true;s.defer=true;s.onload=render;document.head.appendChild(s)}else{setTimeout(render,800)}
+}
+function openFree(){$("freeForm").classList.remove("hide");$("freeDone").classList.add("hide");$("fpw").value="";$("freeErr").textContent="";show("freeOverlay");setTimeout(function(){$("fpw").focus()},60);loadTurnstile()}
 $("navLogin").addEventListener("click",openLogin);
 $("heroLogin").addEventListener("click",openLogin);
 $("heroFree").addEventListener("click",openFree);
@@ -1251,13 +1303,15 @@ $("freeEnter").addEventListener("click",function(){hide("freeOverlay");enterApp(
 function doFree(){
   var pw=$("fpw").value;$("freeErr").textContent="";
   if(pw.length<8){$("freeErr").textContent="密码至少 8 位";return}
+  var cfToken="";
+  if(tsActive()){cfToken=(window.turnstile&&TS_ID!==null)?window.turnstile.getResponse(TS_ID):"";if(!cfToken){$("freeErr").textContent="请先完成上方人机验证";return}}
   $("freeBtn").disabled=true;
-  fetch("/api/free-signup",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({password:pw})}).then(function(r){return r.json().then(function(d){
+  fetch("/api/free-signup",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({password:pw,cfToken:cfToken})}).then(function(r){return r.json().then(function(d){
     $("freeBtn").disabled=false;
-    if(!r.ok){$("freeErr").textContent=d.error||"注册失败";return}
+    if(!r.ok){$("freeErr").textContent=d.error||"注册失败";if(tsActive()&&window.turnstile&&TS_ID!==null)window.turnstile.reset(TS_ID);return}
     TOKEN=d.token;sessionStorage.setItem("tuku_token",TOKEN);
     $("freeCard").textContent=d.card;$("freeForm").classList.add("hide");$("freeDone").classList.remove("hide");
-  })}).catch(function(){$("freeBtn").disabled=false;$("freeErr").textContent="网络错误"});
+  })}).catch(function(){$("freeBtn").disabled=false;$("freeErr").textContent="网络错误";if(tsActive()&&window.turnstile&&TS_ID!==null)window.turnstile.reset(TS_ID)});
 }
 function doLogin(){
   var card=$("card").value.trim(),pw=$("pw").value;
@@ -1954,3 +2008,116 @@ const TERMS_HTML = legalDoc("服务条款", `
 <h2>条款变更</h2>
 <p>我们可能不时更新本条款，重大变更会在产品内提示。继续使用即视为接受更新后的条款。</p>
 `);
+
+/* ---------- 购买页 /buy（手动收款：自己的微信/支付宝码；配置全走 wrangler vars） ---------- */
+const BUY_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>开通存链 · 购买</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%236d5efc'/><text x='50' y='73' font-size='58' text-anchor='middle' fill='%23ffffff' font-family='sans-serif' font-weight='bold'>存</text></svg>"><style>
+:root{--bg:#080910;--card:#10131c;--ink:#EEF1F7;--mut:#8A93A6;--line:rgba(255,255,255,.08);--g1:#a855f7;--g2:#6d5efc;--ok:#34D39A;--amber:#F3B44C}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);line-height:1.6;-webkit-font-smoothing:antialiased;min-height:100vh}
+.bg{position:fixed;inset:0;z-index:-1;background:radial-gradient(900px 500px at 12% -5%,rgba(124,92,255,.20),transparent 60%),radial-gradient(800px 500px at 100% 110%,rgba(52,211,153,.12),transparent 55%)}
+a{color:#a78bfa;text-decoration:none}a:hover{text-decoration:underline}
+button{border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.06);color:var(--ink);font-weight:700;cursor:pointer;padding:10px 15px;font:inherit;transition:.15s}
+button:hover{background:rgba(255,255,255,.11)}
+button.pri{border:0;background:linear-gradient(135deg,var(--g2),var(--g1));color:#fff}
+button.pri:hover{filter:brightness(1.1)}
+button.sm{padding:6px 11px;font-size:.8rem;font-weight:600}
+.wrap{max-width:1000px;margin:0 auto;padding:22px}
+.nav{display:flex;align-items:center;gap:12px;padding:6px 2px}
+.brand{display:flex;align-items:center;gap:10px;font-size:1.2rem;font-weight:800}
+.logo{width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,var(--g2),var(--g1));display:flex;align-items:center;justify-content:center;font-weight:900;color:#fff}
+.nav .sp{margin-left:auto}
+.hero{text-align:center;padding:40px 10px 22px}
+.hero h1{font-size:2rem;font-weight:900;letter-spacing:-.5px;margin-bottom:10px}
+.hero h1 .grad{background:linear-gradient(120deg,#a78bfa,#6d5efc 60%,#34D39A);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.hero p{color:#aeb6c6}
+.tiers{display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:620px;margin:22px auto 8px}
+.tier{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;cursor:pointer;transition:.15s;position:relative;text-align:left}
+.tier:hover{border-color:rgba(124,108,255,.4)}
+.tier.on{border-color:rgba(124,108,255,.7);box-shadow:0 0 0 1px rgba(124,108,255,.5),0 16px 44px rgba(109,94,252,.18)}
+.tier .pop{position:absolute;top:-11px;right:16px;font-size:.7rem;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--g2),var(--g1));padding:3px 11px;border-radius:999px}
+.tier .tn{font-size:1.05rem;font-weight:800}
+.tier .tc{font-size:1.9rem;font-weight:900;margin:4px 0}
+.tier .tc small{font-size:.85rem;color:var(--mut);font-weight:600}
+.tier .tp{color:var(--ok);font-weight:800;font-size:1.05rem}
+.tier .rd{position:absolute;top:16px;left:16px;width:18px;height:18px;border-radius:50%;border:2px solid var(--line)}
+.tier.on .rd{border-color:var(--g2);background:radial-gradient(circle,var(--g2) 40%,transparent 46%)}
+.tier .tn,.tier .tc,.tier .tp{padding-left:26px}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:24px;margin-top:16px;box-shadow:0 12px 40px rgba(0,0,0,.3)}
+.ph{font-size:1.05rem;font-weight:800;margin-bottom:4px}
+.psub{color:var(--mut);font-size:.88rem;margin-bottom:18px}
+.pays{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.pay{text-align:center;border:1px solid var(--line);border-radius:14px;padding:18px;background:rgba(255,255,255,.02)}
+.pay .pt{font-weight:800;margin-bottom:12px;display:flex;align-items:center;justify-content:center;gap:8px}
+.pay .pt .d{width:9px;height:9px;border-radius:50%}
+.qr{width:190px;height:190px;margin:0 auto;border-radius:12px;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.qr img{width:100%;height:100%;object-fit:contain}
+.qr.empty{background:rgba(255,255,255,.04);border:2px dashed var(--line);color:var(--mut);font-size:.82rem;padding:14px;text-align:center}
+.remark{display:flex;align-items:center;gap:10px;background:#0a0b10;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-top:16px;flex-wrap:wrap}
+.remark .lab{color:var(--mut);font-size:.85rem}
+.remark .val{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:800;color:#c9beff;font-size:1rem}
+.remark .sp{margin-left:auto}
+.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:18px}
+.step{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+.step .n{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,var(--g2),var(--g1));color:#fff;font-weight:800;display:flex;align-items:center;justify-content:center;font-size:.82rem;margin-bottom:10px}
+.step h4{font-size:.92rem;margin-bottom:4px}
+.step p{color:#aeb6c6;font-size:.82rem}
+.contact{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:16px;background:linear-gradient(135deg,rgba(109,94,252,.14),rgba(168,85,247,.08));border:1px solid rgba(124,108,255,.35);border-radius:14px;padding:16px 18px}
+.contact .ci{font-size:1.5rem}
+.contact .cv{font-weight:700}
+.contact .sp{margin-left:auto}
+.cta{text-align:center;margin-top:24px}
+.cta a button{padding:13px 26px;font-size:1rem}
+.foot{border-top:1px solid var(--line);margin-top:30px;padding:22px 2px;display:flex;gap:16px;flex-wrap:wrap;color:var(--mut);font-size:.85rem}
+.foot .sp{margin-left:auto}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);opacity:0;background:rgba(14,16,26,.95);border:1px solid var(--line);border-radius:12px;padding:12px 16px;transition:.2s;pointer-events:none;z-index:50}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+@media(max-width:760px){.tiers{grid-template-columns:1fr}.pays{grid-template-columns:1fr}.steps{grid-template-columns:1fr 1fr}.hero h1{font-size:1.6rem}}
+</style></head><body><div class="bg"></div>
+<div class="wrap">
+  <nav class="nav"><div class="brand"><span class="logo">存</span>存链</div><span class="sp"></span><a href="/">← 返回首页</a> · <a href="/">登录 / 开通</a></nav>
+  <header class="hero">
+    <h1>开通<span class="grad">存链</span>正式版</h1>
+    <p>扫码付款 → 加客服发截图 → 收到卡号 → 回首页输入卡号并设密码，即刻开通。</p>
+  </header>
+
+  <div class="tiers" id="tiers">
+    <div class="tier on" data-tier="basic" data-label="存链-基础" data-price="__PRICE_BASIC__"><span class="rd"></span><div class="tn">存链-基础</div><div class="tc">5<small> GB</small></div><div class="tp">__PRICE_BASIC__</div></div>
+    <div class="tier" data-tier="pro" data-label="存链-专业" data-price="__PRICE_PRO__"><span class="pop">大容量</span><span class="rd"></span><div class="tn">存链-专业</div><div class="tc">50<small> GB</small></div><div class="tp">__PRICE_PRO__</div></div>
+  </div>
+
+  <div class="panel">
+    <div class="ph">扫码付款</div>
+    <div class="psub">用微信或支付宝任一扫码支付；<b>付款时请在备注里填下面这行</b>，方便核对你买的套餐。</div>
+    <div class="pays">
+      <div class="pay wx"><div class="pt"><span class="d" style="background:#22c55e"></span>微信支付</div><div class="qr" id="qrWx"></div></div>
+      <div class="pay ali"><div class="pt"><span class="d" style="background:#1677ff"></span>支付宝</div><div class="qr" id="qrAli"></div></div>
+    </div>
+    <div class="remark"><span class="lab">付款备注</span><span class="val" id="remarkVal">存链-基础</span><span class="sp"></span><button class="sm" id="copyRemark">复制备注</button></div>
+  </div>
+
+  <div class="steps">
+    <div class="step"><div class="n">1</div><h4>选套餐</h4><p>上面选基础 / 专业，备注会自动对应。</p></div>
+    <div class="step"><div class="n">2</div><h4>扫码付款</h4><p>微信或支付宝扫码，付款时填上"付款备注"。</p></div>
+    <div class="step"><div class="n">3</div><h4>发截图给客服</h4><p>加下方联系方式，把付款截图发过来。</p></div>
+    <div class="step"><div class="n">4</div><h4>收卡开通</h4><p>收到卡号后，回首页输入卡号+设密码即开通。</p></div>
+  </div>
+
+  <div class="contact"><span class="ci">💬</span><div><div class="cv" id="contactVal">__PAY_CONTACT__</div><div style="color:var(--mut);font-size:.82rem">付款后联系客服发卡（人工发卡，通常很快）</div></div><span class="sp"></span><button class="sm" id="copyContact">复制联系方式</button></div>
+
+  <div class="cta"><a href="/"><button class="pri">已有卡号？去开通 →</button></a></div>
+
+  <footer class="foot"><span>© 存链 · link.aistela.com</span><a href="/privacy">隐私政策</a><a href="/terms">服务条款</a><span class="sp"></span><a href="/">返回首页</a></footer>
+</div>
+<div class="toast" id="toast"></div>
+<script nonce="__CSP_NONCE__">
+function $(id){return document.getElementById(id)}
+function toast(m){var t=$("toast");t.textContent=m;t.classList.add("show");setTimeout(function(){t.classList.remove("show")},2000)}
+function setQr(boxId,url,name){var box=$(boxId);if(!box)return;if(url){var img=document.createElement("img");img.src=url;img.alt=name;img.onerror=function(){box.className="qr empty";box.textContent=name+"收款码加载失败，请联系客服"};box.appendChild(img)}else{box.className="qr empty";box.textContent="未设置"+name+"收款码"}}
+setQr("qrWx","__PAY_WX_QR__","微信");
+setQr("qrAli","__PAY_ALI_QR__","支付宝");
+var tiers=document.querySelectorAll("#tiers .tier");
+for(var i=0;i<tiers.length;i++){tiers[i].addEventListener("click",function(){for(var j=0;j<tiers.length;j++)tiers[j].classList.remove("on");this.classList.add("on");$("remarkVal").textContent=this.getAttribute("data-label")})}
+$("copyRemark").addEventListener("click",function(){navigator.clipboard.writeText($("remarkVal").textContent).then(function(){toast("备注已复制")})});
+$("copyContact").addEventListener("click",function(){navigator.clipboard.writeText($("contactVal").textContent).then(function(){toast("联系方式已复制")})});
+</script>
+</body></html>`;

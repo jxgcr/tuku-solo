@@ -32,15 +32,30 @@
 		"SESSION_TTL_SECONDS": "604800",
 		"AUTH_MAX_FAILURES": "8",
 		"AUTH_LOCK_SECONDS": "900",
-		// 对外购买/续费/升级入口。对外一律走 aistela.com 子域；pay.aistela.com 的反代/发卡页需在门面侧另配好才能真打开。改这里即可，不用动代码。
-		"BUY_URL": "https://pay.aistela.com",
+		// 购买/续费/升级入口：先用站内 /buy 手动收款页（自己的微信/支付宝码）。
+		// 以后想要独立门面 pay.aistela.com，把该子域反代到 link.aistela.com/buy，再把这里改成它即可，代码不动。
+		"BUY_URL": "https://link.aistela.com/buy",
+		// 购买页 /buy 的收款配置（非机密，改完重新部署即生效）：
+		//   PAY_WX_QR / PAY_ALI_QR = 你的微信/支付宝收款码「图片直链」。最省事：把收款码图片拖到存链上传，复制 /i/ 直链贴这里。留空则该码显示“未设置”。
+		//   PAY_CONTACT = 付款后联系客服的方式（如「微信 abc123 / TG @yourname」）
+		//   PRICE_BASIC / PRICE_PRO = 两档价格展示文案（如「¥9.9 / 月」），只是给客户看的，实际收多少你自己定
+		"PAY_WX_QR": "",
+		"PAY_ALI_QR": "",
+		"PAY_CONTACT": "（请在 wrangler.jsonc 填写 PAY_CONTACT）",
+		"PRICE_BASIC": "联系客服",
+		"PRICE_PRO": "联系客服",
 		// 免费试用防薅：同一 IP 每 FREE_SIGNUP_WINDOW 秒最多注册 FREE_SIGNUP_MAX 个免费账号
 		"FREE_SIGNUP_MAX": "3",
-		"FREE_SIGNUP_WINDOW": "86400"
+		"FREE_SIGNUP_WINDOW": "86400",
+		// 免费注册人机验证(Cloudflare Turnstile)。留空=不启用(注册无验证码)；
+		// 启用：CF 后台 Turnstile 建一个 widget，把 Site Key 填这里、Secret Key 用 `wrangler secret put TURNSTILE_SECRET`。两个都配好才生效。
+		"TURNSTILE_SITE_KEY": ""
 	}
 	// 机密（wrangler secret put，不进仓库）：
 	//   CF_IMAGES_TOKEN   Hannah 的 Images:Edit 令牌
 	//   SESSION_SECRET    会话签名随机串
 	//   APP_KEY_TU_BASIC  畅密「图床-basic」应用 app_key
 	//   APP_KEY_TU_PRO    畅密「图床-pro」应用 app_key
+	//   ADMIN_KEY         运营台 /scfw 登录密钥
+	//   TURNSTILE_SECRET  免费注册人机验证的 Turnstile Secret Key（配了才启用验证码）
 }
