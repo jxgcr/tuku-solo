@@ -49,7 +49,7 @@
 		"FREE_SIGNUP_WINDOW": "86400",
 		// 免费注册人机验证(Cloudflare Turnstile)。留空=不启用(注册无验证码)；
 		// 启用：CF 后台 Turnstile 建一个 widget，把 Site Key 填这里、Secret Key 用 `wrangler secret put TURNSTILE_SECRET`。两个都配好才生效。
-		"TURNSTILE_SITE_KEY": ""
+		"TURNSTILE_SITE_KEY": "0x4AAAAAAD0N7hOlgO9srz8l"
 	}
 	// 机密（wrangler secret put，不进仓库）：
 	//   CF_IMAGES_TOKEN   Hannah 的 Images:Edit 令牌
