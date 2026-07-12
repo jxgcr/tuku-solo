@@ -195,12 +195,15 @@ async function handleLogin(request, env) {
 
   const existing = await getCustomerByCard(env, card);
   if (existing) {
-    if (!customerActive(existing)) return json({ error: "账号已停用或到期" }, 403);
-    // 防账号枚举：密码错与卡号未开通/无效，返回同一文案与状态码
+    // 先验密码再看账号状态：停用/到期只对“知道密码的本人”暴露，不给枚举者辨识
     if (!(await verifyPassword(password, existing.password_hash))) return json({ error: "卡号或密码不正确" }, 401);
+    if (!customerActive(existing)) return json({ error: "账号已停用或到期" }, 403);
     const token = await signSession(env, existing.id, card);
     return json({ ok: true, token, tier: existing.tier });
   }
+
+  // 弱口令统一按 401 前置返回：不区分“无效卡 / 有效未开通卡”，杜绝用短密码枚举有效卡（提示交前端）
+  if (password.length < 8) return json({ error: "卡号或密码不正确" }, 401);
 
   // 首次：验卡开通（逐档试，畅密对不匹配的 app_key 返回 404）
   let tier = null, expiresAt = null;
@@ -213,8 +216,6 @@ async function handleLogin(request, env) {
     else return json({ error: "卡号或密码不正确" }, 401);
   }
 
-  // 密码强度只在“开通=设密码”时要求，且只在卡有效后才提示（避免拿弱口令探测卡是否已开通）
-  if (password.length < 8) return json({ error: "首次开通请设至少 8 位密码" }, 400);
   const preset = TIERS[tier];
   const now = Math.floor(Date.now() / 1000);
   const pwHash = await hashPassword(password);
@@ -259,6 +260,12 @@ async function handleUpload(request, env, customer) {
       const ins = await env.DB.prepare(
         "INSERT INTO images (customer_id, album_id, kind, cf_id, filename, mime, bytes, uploaded_at) VALUES (?,?,'image',?,?,?,?,?)"
       ).bind(customer.id, albumId, cfId, file.name || "", file.type || "image/*", file.size, now).run();
+      // 并发 TOCTOU 兜底：入库后复核，超限则回滚（删 CF Images 对象 + 删行）
+      if ((await usedBytesOf(env, customer.id)) > customer.byte_limit) {
+        try { await imagesApi(env, "/" + encodeURIComponent(cfId), { method: "DELETE" }); } catch (e2) { await recordPending(env, "image", cfId); }
+        await env.DB.prepare("DELETE FROM images WHERE id=? AND customer_id=?").bind(ins.meta.last_row_id, customer.id).run();
+        return json({ error: "容量不足（上限 " + fmtGB(customer.byte_limit) + "），请删文件或升级" }, 402);
+      }
       return json({
         ok: true, id: ins.meta.last_row_id, kind: "image",
         link: (env.PUBLIC_BASE || "") + "/i/" + cfId,
@@ -344,9 +351,13 @@ async function handleMpuComplete(request, env, customer) {
     const a = await env.DB.prepare("SELECT id FROM albums WHERE id=? AND customer_id=?").bind(albumId, customer.id).first();
     if (!a) albumId = null;
   }
-  // 安全：以 R2 实际大小为准（防客户端申报 size 造假绕配额），并复核容量，超限则删对象回滚
-  let realSize = Number(body.size) || 0;
-  try { const head = await env.R2.head(key); if (head && Number.isFinite(head.size)) realSize = head.size; } catch (e) { /* 退回申报值 */ }
+  // 安全：只认 R2 实际大小（绝不回退客户端申报的 size，杜绝造假绕配额）；拿不到就判失败回滚
+  let realSize = null;
+  try { const head = await env.R2.head(key); if (head && Number.isFinite(head.size)) realSize = head.size; } catch (e) { /* 下面统一处理 */ }
+  if (realSize == null) {
+    try { await env.R2.delete(key); } catch (e) { console.log("mpu head-fail rollback fail: " + key); }
+    return json({ error: "文件校验失败，请重试" }, 502);
+  }
   const usedBytes = await usedBytesOf(env, customer.id);
   if (usedBytes + realSize > customer.byte_limit) {
     try { await env.R2.delete(key); } catch (e) { console.log("mpu over-quota rollback fail: " + key); }
@@ -595,7 +606,7 @@ export default {
   // 定时对账：补删之前删除失败留下的孤儿存储对象（DB 行已删、存储没删干净的）
   async scheduled(event, env, ctx) {
     try {
-      const rows = await env.DB.prepare("SELECT id, kind, ref, attempts FROM pending_deletes ORDER BY id LIMIT 50").all();
+      const rows = await env.DB.prepare("SELECT id, kind, ref, attempts FROM pending_deletes ORDER BY id LIMIT 200").all();
       for (const r of (rows.results || [])) {
         let done = false;
         try {
@@ -850,7 +861,7 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
   <div class="brand"><span class="logo">存</span>存链</div>
   <div class="muted">第一次用：输入卡号 + 给自己设个密码，即完成开通。以后凭卡号+密码登录。</div>
   <input id="card" placeholder="卡号 CM-XXXX-XXXX-XXXX" autocomplete="off">
-  <input id="pw" type="password" placeholder="访问密码（至少4位）">
+  <input id="pw" type="password" placeholder="访问密码（首次开通请设 ≥8 位）">
   <button class="pri" id="loginBtn" style="width:100%">进入</button>
   <div id="loginErr" class="muted" style="color:var(--bad);min-height:20px"></div>
 </div></div>
