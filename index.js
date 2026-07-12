@@ -930,6 +930,15 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 .pitem.done .pbar>i{background:var(--ok);width:100%}
 .pitem.err .pbar>i{background:var(--bad)}
 .pitem.err .pct{color:var(--bad)}
+.pitem.paused .pbar>i{background:var(--amber)}
+.pitem.paused .pct{color:var(--amber)}
+.pitem.canceled{opacity:.55}
+.pitem.canceled .pbar>i{background:var(--mut)}
+.pitem.canceled .pct{color:var(--mut)}
+.pacts{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
+.pacts:empty{margin-top:0}
+.pbtn{padding:4px 10px;font-size:.74rem;font-weight:600;border-radius:8px}
+.pbtn.del{color:var(--bad);border-color:rgba(242,114,111,.35)}
 .ftool{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap}
 .ftitle{font-size:1.05rem;font-weight:700;margin-right:auto}
 .srch{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:10px;padding:0 12px;min-width:170px}
@@ -1047,10 +1056,15 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 .lpfoot .sp{margin-left:auto}
 .cardbox{background:rgba(52,211,153,.08);border:1px solid rgba(52,211,153,.35);border-radius:12px;padding:14px;margin:10px 0;text-align:center}
 .cardbox .cn{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:1.1rem;font-weight:800;color:#7ee7b8;letter-spacing:1px;word-break:break-all}
-.banner{display:flex;align-items:center;gap:12px;background:linear-gradient(135deg,rgba(243,180,76,.14),rgba(242,114,111,.1));border:1px solid rgba(243,180,76,.35);border-radius:12px;padding:12px 16px;margin-bottom:18px;font-size:.9rem}
-.banner.free{background:linear-gradient(135deg,rgba(109,94,252,.16),rgba(168,85,247,.1));border-color:rgba(124,108,255,.4)}
-.banner .bx{margin-left:auto;flex-shrink:0}
-.banner .bx button{padding:8px 14px;font-size:.82rem}
+.banner{display:flex;align-items:center;gap:10px;background:rgba(124,108,255,.08);border:1px solid rgba(124,108,255,.28);border-radius:10px;padding:8px 12px;margin-bottom:16px;font-size:.82rem;color:var(--mut)}
+.banner.free{background:rgba(124,108,255,.08);border-color:rgba(124,108,255,.28)}
+.banner b{color:var(--ink);font-weight:600}
+.banner .bx{margin-left:auto;flex-shrink:0;display:flex;align-items:center;gap:6px}
+.banner .bx a{color:#c9beff;font-weight:600;text-decoration:none;white-space:nowrap}
+.banner .bx .close{width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--mut);font-size:1rem}
+.banner .bx .close:hover{background:rgba(255,255,255,.08);color:var(--ink)}
+.space .spacefoot{margin-top:14px;border-top:1px solid var(--line);padding-top:4px}
+.space .spacefoot .info{padding:7px 0}
 @media(max-width:820px){
 .hero h1{font-size:2rem}
 .feat{grid-template-columns:1fr}
@@ -1186,27 +1200,16 @@ form-data:  file=@shot.png
 
       <div id="view-dash" class="view">
         <div id="upBanner" class="banner hide"></div>
-        <div class="cards">
-          <div class="scard"><div class="ico i1">🖼️</div><div><div class="k">文件数量</div><div class="v" id="sCount">0</div></div></div>
-          <div class="scard"><div class="ico i2">💾</div><div><div class="k">已用容量</div><div class="v" id="sUsed">0</div></div></div>
-          <div class="scard"><div class="ico i3">📦</div><div><div class="k">可用容量</div><div class="v" id="sFree">0</div></div></div>
-          <div class="scard"><div class="ico i4">🗄️</div><div><div class="k">总容量</div><div class="v" id="sTotal">0</div></div></div>
-        </div>
-        <div class="panels">
-          <div class="panel">
-            <div class="ph">容量用量</div>
-            <div class="usebar"><i id="dBar"></i></div>
-            <div class="usetxt"><span id="dUseTxt">0 / 0</span><span id="dPct" class="muted">0%</span></div>
-            <div id="catBars" style="margin-top:16px"></div>
-            <button class="pri" id="goUpload" style="margin-top:18px">☁️ 上传文件</button>
-          </div>
-          <div class="panel">
-            <div class="ph">我的信息</div>
-            <div class="info"><span class="il">档位</span><span class="tierbadge" id="iTier">—</span></div>
-            <div class="info"><span class="il">卡号</span><span class="mono" id="iCard">—</span></div>
+        <div class="panel space">
+          <div class="ph" style="display:flex;justify-content:space-between;align-items:center">我的空间<span class="muted" style="font-weight:400"><span id="sCount">0</span> 个文件</span></div>
+          <div class="usetxt" style="margin-bottom:9px"><span id="dUseTxt" style="font-size:1.5rem;font-weight:800">0 / 0</span><span id="dPct" class="muted">0%</span></div>
+          <div class="usebar"><i id="dBar"></i></div>
+          <div id="catBars" style="margin-top:16px"></div>
+          <div class="spacefoot">
             <div class="info"><span class="il">到期</span><span id="iExp">—</span></div>
             <div class="info"><span class="il">隐私</span><span>🔒 文件仅你可见，不公开</span></div>
           </div>
+          <button class="pri" id="goUpload" style="margin-top:16px">☁️ 上传文件</button>
         </div>
         <div class="panel" style="margin-top:16px">
           <div class="ph" style="display:flex;justify-content:space-between;align-items:center">最近上传<span class="muted" id="recMore" style="cursor:pointer;font-weight:400">查看全部 ›</span></div>
@@ -1332,11 +1335,6 @@ function loadAlbums(){return api("/api/albums").then(function(d){ALBUMS=d.albums
 function loadMe(){api("/api/me").then(function(d){ME=d;
   $("who").textContent=d.tierLabel;
   $("sCount").textContent=d.count;
-  $("sUsed").textContent=fmtSize(d.usedBytes);
-  $("sFree").textContent=fmtSize(Math.max(0,d.byteLimit-d.usedBytes));
-  $("sTotal").textContent=fmtSize(d.byteLimit);
-  $("iTier").textContent=d.tierLabel;
-  $("iCard").textContent=d.card;
   $("iExp").textContent=d.expiresAt?d.expiresAt.slice(0,10):"永久";
   var pct=d.byteLimit>0?Math.min(100,d.usedBytes/d.byteLimit*100):0;
   var bar=$("dBar");bar.style.width=(pct<1.5&&pct>0?1.5:pct).toFixed(1)+"%";bar.className=pct>=95?"full":pct>=80?"warn":"";
@@ -1346,12 +1344,18 @@ function loadMe(){api("/api/me").then(function(d){ME=d;
 }).catch(function(){})}
 function renderUpBanner(d){
   var el=$("upBanner");if(!el)return;
+  if(sessionStorage.getItem("tuku_banner_off")==="1"){el.classList.add("hide");return}
   var days=null;if(d.expiresAt){days=Math.ceil((new Date(d.expiresAt).getTime()-Date.now())/86400000)}
-  var pct=d.byteLimit>0?d.usedBytes/d.byteLimit*100:0,html="",cls="banner";
-  if(d.tier==="free"){cls="banner free";html="<span>🎁 你正在用<b>免费档</b>（500MB，图片带水印）。升级去水印、扩容到 5GB / 50GB。</span><span class='bx'><a href='__BUY_URL__' target='_blank' rel='noopener'><button class='pri'>升级</button></a></span>";}
-  else if(days!=null&&days<=7){html="<span>⏰ 账号将在 <b>"+(days<0?0:days)+" 天</b>后到期，续费以免中断使用。</span><span class='bx'><a href='__BUY_URL__' target='_blank' rel='noopener'><button class='pri'>续费</button></a></span>";}
-  else if(pct>=90){html="<span>📦 容量已用 <b>"+Math.round(pct)+"%</b>，快满了。清理文件或升级扩容。</span><span class='bx'><a href='__BUY_URL__' target='_blank' rel='noopener'><button class='pri'>扩容</button></a></span>";}
-  if(html){el.innerHTML=html;el.className=cls;el.classList.remove("hide")}else{el.classList.add("hide")}
+  var pct=d.byteLimit>0?d.usedBytes/d.byteLimit*100:0,msg="",cta="升级 ›";
+  if(d.tier==="free"){msg="<b>免费档</b> · 500MB，图片带水印。需要更多空间?";}
+  else if(days!=null&&days<=7){msg="账号将在 <b>"+(days<0?0:days)+" 天</b>后到期。";cta="续费 ›";}
+  else if(pct>=90){msg="容量已用 <b>"+Math.round(pct)+"%</b>，快满了。";cta="扩容 ›";}
+  if(msg){
+    el.className="banner free";
+    el.innerHTML="<span>"+msg+"</span><span class='bx'><a href='__BUY_URL__' target='_blank' rel='noopener'>"+cta+"</a><span class='close' id='bannerClose'>×</span></span>";
+    var c=$("bannerClose");if(c)c.onclick=function(){sessionStorage.setItem("tuku_banner_off","1");el.classList.add("hide")};
+    el.classList.remove("hide");
+  }else el.classList.add("hide");
 }
 function applyTierUI(){
   var free=ME&&ME.tier==="free",cmp=$("cmp"),wm=$("wm");if(!cmp||!wm)return;
@@ -1569,13 +1573,25 @@ function compressImage(file,maxDim,quality,wm){
     img.src=url;
   });
 }
-function xhrUpload(file,albumId,onprog){
+function ctrlGate(ctrl){
+  return new Promise(function(res,rej){
+    (function chk(){
+      if(ctrl&&ctrl.canceled)return rej(new Error("已取消"));
+      if(!ctrl||!ctrl.paused)return res();
+      setTimeout(chk,300);
+    })();
+  });
+}
+function xhrUpload(file,albumId,onprog,ctrl){
   return new Promise(function(resolve,reject){
+    if(ctrl&&ctrl.canceled)return reject(new Error("已取消"));
     var fd=new FormData();fd.append("file",file);if(albumId)fd.append("album_id",albumId);
     var x=new XMLHttpRequest();x.open("POST","/api/upload");x.setRequestHeader("authorization","Bearer "+TOKEN);
+    if(ctrl){ctrl.xhr=x;ctrl.abort=function(){try{x.abort()}catch(e){}}}
     x.upload.onprogress=function(e){if(e.lengthComputable&&onprog)onprog(e.loaded/e.total)};
     x.onload=function(){var d={};try{d=JSON.parse(x.responseText)}catch(e){}if(x.status>=200&&x.status<300)resolve(d);else{if(x.status===401)logout();reject(new Error(d.error||("HTTP "+x.status)))}};
     x.onerror=function(){reject(new Error("网络错误"))};
+    x.onabort=function(){reject(new Error("已取消"))};
     x.send(fd);
   });
 }
@@ -1584,7 +1600,7 @@ function mpuSave(sig,st){try{localStorage.setItem(sig,JSON.stringify(st))}catch(
 function mpuLoad(sig){try{var v=localStorage.getItem(sig);return v?JSON.parse(v):null}catch(e){return null}}
 function mpuClear(sig){try{localStorage.removeItem(sig)}catch(e){}}
 // 大文件分片上传，带断点续传(localStorage 记 uploadId+已传分片)+ 每片自动重试
-function multipartUpload(file,albumId,onprog){
+function multipartUpload(file,albumId,onprog,ctrl){
   var CHUNK=40*1024*1024;
   var sig=fileSig(file);
   var st=mpuLoad(sig),resumed=false;
@@ -1602,17 +1618,20 @@ function multipartUpload(file,albumId,onprog){
       return new Promise(function(resolve,reject){
         var start=(n-1)*CHUNK,chunk=file.slice(start,Math.min(file.size,start+CHUNK));
         var x=new XMLHttpRequest();x.open("POST","/api/mpu/part?key="+encodeURIComponent(st.key)+"&uploadId="+encodeURIComponent(st.uploadId)+"&part="+n);x.setRequestHeader("authorization","Bearer "+TOKEN);
+        if(ctrl){ctrl.xhr=x;ctrl.abort=function(){try{x.abort()}catch(e){}}}
         x.upload.onprogress=function(e){if(e.lengthComputable&&onprog){var base=st.parts.length*CHUNK;onprog(Math.min(1,(base+e.loaded)/file.size))}};
         x.onload=function(){var d={};try{d=JSON.parse(x.responseText)}catch(e){}if(x.status>=200&&x.status<300){st.parts.push({part:d.part,etag:d.etag});mpuSave(sig,st);reportBase();resolve()}else{if(x.status===401)logout();reject(new Error(d.error||("分片"+n+"失败")))}};
         x.onerror=function(){reject(new Error("网络中断"))};
+        x.onabort=function(){reject(new Error("已取消"))};
         x.send(chunk);
       }).catch(function(e){
+        if(ctrl&&ctrl.canceled)throw new Error("已取消");
         if(attempt<3)return new Promise(function(r){setTimeout(r,900*attempt)}).then(function(){return uploadPart(n,attempt+1)});
         throw e;
       });
     }
-    function loop(n){if(n>total)return Promise.resolve();if(done[n])return loop(n+1);return uploadPart(n,1).then(function(){return loop(n+1)})}
-    return loop(1).catch(function(e){if(resumed)mpuClear(sig);throw e});
+    function loop(n){if(n>total)return Promise.resolve();if(done[n])return loop(n+1);return ctrlGate(ctrl).then(function(){return uploadPart(n,1)}).then(function(){return loop(n+1)})}
+    return loop(1).catch(function(e){if(resumed&&!(ctrl&&ctrl.canceled))mpuClear(sig);if(ctrl&&ctrl.canceled)mpuClear(sig);throw e});
   }).then(function(){
     return api("/api/mpu/complete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({key:st.key,uploadId:st.uploadId,parts:st.parts,filename:file.name,mime:file.type||"application/octet-stream",size:file.size,album_id:albumId})});
   }).then(function(r){mpuClear(sig);return r});
@@ -1623,18 +1642,33 @@ function uploadFiles(files){
   var pc=$("progress");pc.classList.remove("hide");pc.innerHTML="";
   var doCompress=$("cmp").checked,wm=$("wm").value.trim();
   var albumId=(NAV.album!=null&&NAV.type==null)?NAV.album:null;
-  var done=0,fail=0,quotaHit=false;
+  var done=0,fail=0,canceled=0,quotaHit=false;
   var runOne=function(i){
-    if(i>=files.length){toast("完成 "+done+" 个"+(fail?("，失败 "+fail):""));reloadFiles();setTimeout(function(){if(!fail)pc.classList.add("hide")},1600);if(quotaHit)openUpgrade("容量不足，剩余空间放不下这次上传。");return}
+    if(i>=files.length){var msg="完成 "+done+" 个"+(fail?("，失败 "+fail):"")+(canceled?("，取消 "+canceled):"");toast(msg);reloadFiles();setTimeout(function(){if(!fail&&!canceled)pc.classList.add("hide")},1600);if(quotaHit)openUpgrade("容量不足，剩余空间放不下这次上传。");return}
     var f=files[i];
+    var ctrl={canceled:false,paused:false,xhr:null,abort:null};
     var item=document.createElement("div");item.className="pitem";
-    item.innerHTML="<div class='pn'><span>"+esc(f.name)+"</span><span class='pct'>0%</span></div><div class='pbar'><i></i></div>";
+    item.innerHTML="<div class='pn'><span>"+esc(f.name)+"</span><span class='pct'>0%</span></div><div class='pbar'><i></i></div><div class='pacts'></div>";
     pc.appendChild(item);
-    var bar=item.querySelector("i"),pct=item.querySelector(".pct");
+    var bar=item.querySelector("i"),pct=item.querySelector(".pct"),acts=item.querySelector(".pacts");
+    var cancelBtn=document.createElement("button");cancelBtn.className="pbtn del";cancelBtn.textContent="✕ 取消";
+    cancelBtn.onclick=function(){ctrl.canceled=true;if(ctrl.abort)ctrl.abort();};
+    acts.appendChild(cancelBtn);
     (doCompress?compressImage(f,2560,0.85,wm):Promise.resolve(f)).then(function(uf){
-      var prog=function(p){var v=Math.round(p*100);bar.style.width=v+"%";pct.textContent=v+"%"};
-      return uf.size>90*1024*1024 ? multipartUpload(uf,albumId,prog) : xhrUpload(uf,albumId,prog);
-    }).then(function(){done++;item.classList.add("done");pct.textContent="完成"}).catch(function(e){fail++;item.classList.add("err");pct.textContent=e.message;if(/容量不足|升级|扩容/.test(e.message||""))quotaHit=true}).then(function(){runOne(i+1)});
+      if(ctrl.canceled)throw new Error("已取消");
+      var prog=function(p){if(ctrl.paused)return;var v=Math.round(p*100);bar.style.width=v+"%";pct.textContent=v+"%"};
+      var big=uf.size>90*1024*1024;
+      if(big){
+        var pauseBtn=document.createElement("button");pauseBtn.className="pbtn";pauseBtn.textContent="⏸ 暂停";
+        pauseBtn.onclick=function(){ctrl.paused=!ctrl.paused;pauseBtn.textContent=ctrl.paused?"▶ 继续":"⏸ 暂停";item.classList.toggle("paused",ctrl.paused);if(ctrl.paused)pct.textContent="已暂停"};
+        acts.insertBefore(pauseBtn,cancelBtn);
+      }
+      return big?multipartUpload(uf,albumId,prog,ctrl):xhrUpload(uf,albumId,prog,ctrl);
+    }).then(function(){done++;item.classList.add("done");pct.textContent="完成";acts.innerHTML=""})
+    .catch(function(e){
+      if(ctrl.canceled||/已取消/.test(e.message||"")){canceled++;item.classList.add("canceled");pct.textContent="已取消";acts.innerHTML="";}
+      else{fail++;item.classList.add("err");pct.textContent=e.message;acts.innerHTML="";if(/容量不足|升级|扩容/.test(e.message||""))quotaHit=true;}
+    }).then(function(){runOne(i+1)});
   };
   toast("上传中…");runOne(0);
 }
