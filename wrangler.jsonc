@@ -31,7 +31,12 @@
 		"PUBLIC_BASE": "https://link.aistela.com",
 		"SESSION_TTL_SECONDS": "604800",
 		"AUTH_MAX_FAILURES": "8",
-		"AUTH_LOCK_SECONDS": "900"
+		"AUTH_LOCK_SECONDS": "900",
+		// 对外购买/续费/升级入口。对外一律走 aistela.com 子域；pay.aistela.com 的反代/发卡页需在门面侧另配好才能真打开。改这里即可，不用动代码。
+		"BUY_URL": "https://pay.aistela.com",
+		// 免费试用防薅：同一 IP 每 FREE_SIGNUP_WINDOW 秒最多注册 FREE_SIGNUP_MAX 个免费账号
+		"FREE_SIGNUP_MAX": "3",
+		"FREE_SIGNUP_WINDOW": "86400"
 	}
 	// 机密（wrangler secret put，不进仓库）：
 	//   CF_IMAGES_TOKEN   Hannah 的 Images:Edit 令牌

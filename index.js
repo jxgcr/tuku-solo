@@ -1,16 +1,24 @@
-// 图床 tuku Worker — 多租户图片托管 SaaS
-// 账号 Hannah；图片存 Cloudflare Images；元数据存 D1(DB)；卡密来自畅密(changmi)
+// 存链 tuku Worker — 多租户文件/图片托管 SaaS
+// 账号 Hannah；图片存 Cloudflare Images；非图片存 R2；元数据存 D1(DB)；卡密来自畅密(changmi)
+// 获客：/ 落地页 + 免费档(无卡密,500MB,限注册) + 开发者 API(/api/v1/upload, PicGo/Lsky 兼容, 付费档)
 // 机密(wrangler secret)：CF_IMAGES_TOKEN、SESSION_SECRET、APP_KEY_TU_BASIC、APP_KEY_TU_PRO
+// 配置(wrangler vars)：BUY_URL(购买入口)、FREE_SIGNUP_MAX/WINDOW(免费限注册)
 const VERSION = "tuku-v1-20260712";
 const MAX_SIZE = 10 * 1024 * 1024; // CF Images 图片单张上限 10MB
 const MAX_FILE = 100 * 1024 * 1024; // 非图片单文件上限 100MB（更大走直传，二期再说）
 const GB = 1073741824;
 const DEFAULT_SESSION_TTL = 7 * 24 * 3600;
 // 档位：容量上限（字节）。价格是运营侧的事，这里只管容量闸。改档位改这里重新部署。
+// free = 获客免费档：无需卡密，填密码即生成账号；容量小、图片强制品牌水印、按 IP 限注册防薅。
 const TIERS = {
+  free: { byteLimit: 500 * 1024 * 1024, label: "存链-免费" },
   basic: { byteLimit: 5 * GB, label: "存链-基础" },
   pro: { byteLimit: 50 * GB, label: "存链-专业" },
 };
+// 对外购买/续费/升级入口。对外一律走 aistela.com 子域，绝不暴露内部 .5209696.xyz 域。
+// 可配置：改 wrangler.jsonc 的 vars.BUY_URL 即可，不用动代码。子域的反代/发卡页在门面侧另配。
+function buyUrl(env) { return (env && env.BUY_URL) || "https://pay.aistela.com"; }
+function imgThumb(env, cfId) { return "https://imagedelivery.net/" + env.IMAGES_HASH + "/" + cfId + "/public"; }
 function fmtGB(b) { const g = Number(b) / GB; return (g >= 10 || g === Math.floor(g) ? g.toFixed(0) : g.toFixed(1)) + "GB"; }
 function safeName(n) { return String(n || "file").replace(/[^\w.\-]/g, "_").slice(-80) || "file"; }
 
@@ -21,11 +29,11 @@ function json(data, status = 200) {
     headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
   });
 }
-function htmlResponse(body) {
+function htmlResponse(body, env) {
   // 每次请求生成随机 nonce，注入 <script nonce> 并写进 CSP，从而去掉 script-src 的 'unsafe-inline'
   // （脚本仍内联，不拆文件、无缓存坑；页面 no-store 不缓存，nonce 逐请求刷新）。
   const nonce = btoa(String.fromCharCode.apply(null, crypto.getRandomValues(new Uint8Array(16)))).replace(/[+/=]/g, "");
-  const html = String(body).split("__CSP_NONCE__").join(nonce);
+  const html = String(body).split("__CSP_NONCE__").join(nonce).split("__BUY_URL__").join(buyUrl(env));
   return new Response(html, {
     headers: {
       "content-type": "text/html; charset=utf-8",
@@ -228,57 +236,41 @@ async function handleLogin(request, env) {
 }
 
 /* ---------- 上传 ---------- */
-async function handleUpload(request, env, customer) {
-  const form = await request.formData();
-  const file = form.get("file");
-  if (!file || typeof file === "string") return json({ error: "缺少文件" }, 400);
+// 上传核心：图片→CF Images、其它→R2，含大小闸/配额闸/并发 TOCTOU 复核回滚/写库失败回滚。
+// web 端与开发者 API 共用同一套逻辑。返回 { record } 或 { error, status }。
+async function storeUpload(env, customer, file, albumId) {
   const isImage = String(file.type || "").startsWith("image/");
-  if (isImage && file.size > MAX_SIZE) return json({ error: "图片单张超过 10MB" }, 413);
-  if (!isImage && file.size > MAX_FILE) return json({ error: "单个文件超过 100MB 上限" }, 413);
-
+  if (isImage && file.size > MAX_SIZE) return { error: "图片单张超过 10MB", status: 413 };
+  if (!isImage && file.size > MAX_FILE) return { error: "单个文件超过 100MB 上限", status: 413 };
   const usedBytes = await usedBytesOf(env, customer.id);
   if (usedBytes + file.size > customer.byte_limit) {
-    return json({ error: "容量不足（上限 " + fmtGB(customer.byte_limit) + "，已用 " + fmtGB(usedBytes) + "），请删文件或升级" }, 402);
-  }
-
-  let albumId = Number(form.get("album_id")) || null;
-  if (albumId) {
-    const a = await env.DB.prepare("SELECT id FROM albums WHERE id=? AND customer_id=?").bind(albumId, customer.id).first();
-    if (!a) albumId = null;
+    return { error: "容量不足（上限 " + fmtGB(customer.byte_limit) + "，已用 " + fmtGB(usedBytes) + "），请删文件或升级", status: 402 };
   }
   const now = Math.floor(Date.now() / 1000);
-
   if (isImage) {
     const fd = new FormData();
     fd.append("file", file, file.name || "upload.png");
     fd.append("requireSignedURLs", "false");
     fd.append("metadata", JSON.stringify({ owner: String(customer.id) }));
     const data = await imagesApi(env, "", { method: "POST", body: fd });
-    if (!data.success) return json({ error: (data.errors && data.errors[0] && data.errors[0].message) || "图片上传失败" }, 502);
+    if (!data.success) return { error: (data.errors && data.errors[0] && data.errors[0].message) || "图片上传失败", status: 502 };
     const cfId = data.result.id;
     try {
       const ins = await env.DB.prepare(
         "INSERT INTO images (customer_id, album_id, kind, cf_id, filename, mime, bytes, uploaded_at) VALUES (?,?,'image',?,?,?,?,?)"
       ).bind(customer.id, albumId, cfId, file.name || "", file.type || "image/*", file.size, now).run();
-      // 并发 TOCTOU 兜底：入库后复核，超限则回滚（删 CF Images 对象 + 删行）
       if ((await usedBytesOf(env, customer.id)) > customer.byte_limit) {
         try { await imagesApi(env, "/" + encodeURIComponent(cfId), { method: "DELETE" }); } catch (e2) { await recordPending(env, "image", cfId); }
         await env.DB.prepare("DELETE FROM images WHERE id=? AND customer_id=?").bind(ins.meta.last_row_id, customer.id).run();
-        return json({ error: "容量不足（上限 " + fmtGB(customer.byte_limit) + "），请删文件或升级" }, 402);
+        return { error: "容量不足（上限 " + fmtGB(customer.byte_limit) + "），请删文件或升级", status: 402 };
       }
-      return json({
-        ok: true, id: ins.meta.last_row_id, kind: "image",
-        link: (env.PUBLIC_BASE || "") + "/i/" + cfId,
-        thumb: "https://imagedelivery.net/" + env.IMAGES_HASH + "/" + cfId + "/public",
-      });
+      return { record: { id: ins.meta.last_row_id, kind: "image", cf_id: cfId, r2_key: null, filename: file.name || "", mime: file.type || "image/*", bytes: file.size } };
     } catch (e) {
-      // 写库失败：回滚已上传的 CF Images 对象，避免孤儿
       try { await imagesApi(env, "/" + encodeURIComponent(cfId), { method: "DELETE" }); } catch (e2) { await recordPending(env, "image", cfId); }
       console.log("image insert fail, rolled back: " + (e && e.message ? e.message : e));
-      return json({ error: "上传失败，请重试" }, 502);
+      return { error: "上传失败，请重试", status: 502 };
     }
   }
-
   // 非图片 → R2
   const key = customer.id + "/" + crypto.randomUUID() + "-" + safeName(file.name);
   try {
@@ -287,22 +279,109 @@ async function handleUpload(request, env, customer) {
     const ins = await env.DB.prepare(
       "INSERT INTO images (customer_id, album_id, kind, cf_id, r2_key, filename, mime, bytes, uploaded_at) VALUES (?,?,'file','',?,?,?,?,?)"
     ).bind(customer.id, albumId, key, file.name || "file", file.type || "application/octet-stream", file.size, now).run();
-    // 并发 TOCTOU 兜底：入库后复核，超限则回滚（删对象+删行）
     if ((await usedBytesOf(env, customer.id)) > customer.byte_limit) {
       try { await env.R2.delete(key); } catch (e) {}
       await env.DB.prepare("DELETE FROM images WHERE id=? AND customer_id=?").bind(ins.meta.last_row_id, customer.id).run();
-      return json({ error: "容量不足（上限 " + fmtGB(customer.byte_limit) + "），请删文件或升级" }, 402);
+      return { error: "容量不足（上限 " + fmtGB(customer.byte_limit) + "），请删文件或升级", status: 402 };
     }
-    return json({
-      ok: true, id: ins.meta.last_row_id, kind: "file", filename: file.name || "file",
-      link: await fileLink(env, ins.meta.last_row_id),
-    });
+    return { record: { id: ins.meta.last_row_id, kind: "file", cf_id: "", r2_key: key, filename: file.name || "file", mime: file.type || "application/octet-stream", bytes: file.size } };
   } catch (e) {
-    // R2 已写但写库失败等：回滚 R2 对象，避免孤儿
     try { await env.R2.delete(key); } catch (e2) { await recordPending(env, "r2", key); }
     console.log("file upload fail, rolled back: " + (e && e.message ? e.message : e));
-    return json({ error: "文件上传失败，请稍后重试" }, 502);
+    return { error: "文件上传失败，请稍后重试", status: 502 };
   }
+}
+async function handleUpload(request, env, customer) {
+  const form = await request.formData();
+  const file = form.get("file");
+  if (!file || typeof file === "string") return json({ error: "缺少文件" }, 400);
+  let albumId = Number(form.get("album_id")) || null;
+  if (albumId) {
+    const a = await env.DB.prepare("SELECT id FROM albums WHERE id=? AND customer_id=?").bind(albumId, customer.id).first();
+    if (!a) albumId = null;
+  }
+  const r = await storeUpload(env, customer, file, albumId);
+  if (r.error) return json({ error: r.error }, r.status || 400);
+  const rec = r.record;
+  if (rec.kind === "image") {
+    return json({ ok: true, id: rec.id, kind: "image", link: (env.PUBLIC_BASE || "") + "/i/" + rec.cf_id, thumb: imgThumb(env, rec.cf_id) });
+  }
+  return json({ ok: true, id: rec.id, kind: "file", filename: rec.filename, link: await fileLink(env, rec.id) });
+}
+
+/* ---------- 开发者 API：PicGo「兰空图床(Lsky)」/ Typora 兼容上传 ---------- */
+// 用 api_key（Authorization: Bearer tuku_...）鉴权，不走会话；multipart 字段名 file。
+// 返回兰空/Lsky 风格结构，PicGo「兰空图床」插件把 server 填 https://link.aistela.com 即可直传。
+async function handleApiUpload(request, env) {
+  const key = bearer(request);
+  if (!key || key.indexOf("tuku_") !== 0) return json({ status: false, message: "缺少或无效的 API 密钥（请在设置里生成）" }, 401);
+  const customer = await env.DB.prepare("SELECT * FROM customers WHERE api_key=?").bind(key).first();
+  if (!customerActive(customer)) return json({ status: false, message: "密钥无效或账号已停用/到期" }, 401);
+  if (customer.tier === "free") return json({ status: false, message: "开发者 API 为付费功能，请升级后使用" }, 403);
+  let form;
+  try { form = await request.formData(); } catch (e) { return json({ status: false, message: "请用 multipart/form-data 上传，字段名 file" }, 400); }
+  const file = form.get("file");
+  if (!file || typeof file === "string") return json({ status: false, message: "缺少文件（字段名 file）" }, 400);
+  const r = await storeUpload(env, customer, file, null);
+  if (r.error) return json({ status: false, message: r.error }, r.status || 400);
+  const rec = r.record;
+  const url = rec.kind === "image" ? (env.PUBLIC_BASE || "") + "/i/" + rec.cf_id : await fileLink(env, rec.id);
+  const name = rec.filename || "file";
+  const ext = name.lastIndexOf(".") > 0 ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : "";
+  return json({
+    status: true, message: "上传成功",
+    data: {
+      key: String(rec.id), name: name, origin_name: name, size: rec.bytes, mimetype: rec.mime, extension: ext,
+      links: {
+        url: url,
+        html: rec.kind === "image" ? '<img src="' + url + '" alt="' + name + '">' : '<a href="' + url + '">' + name + '</a>',
+        markdown: rec.kind === "image" ? "![" + name + "](" + url + ")" : "[" + name + "](" + url + ")",
+        bbcode: rec.kind === "image" ? "[img]" + url + "[/img]" : "[url]" + url + "[/url]",
+        thumbnail_url: rec.kind === "image" ? imgThumb(env, rec.cf_id) : null,
+      },
+    },
+  });
+}
+function genApiKey() { return "tuku_" + b64u(crypto.getRandomValues(new Uint8Array(24))); }
+async function handleGetApiKey(env, customer) {
+  if (customer.tier === "free") return json({ locked: true, endpoint: (env.PUBLIC_BASE || "") + "/api/v1/upload" });
+  return json({ apiKey: customer.api_key || null, endpoint: (env.PUBLIC_BASE || "") + "/api/v1/upload" });
+}
+async function handleRotateApiKey(env, customer) {
+  if (customer.tier === "free") return json({ error: "开发者 API 为付费功能，请升级后使用" }, 403);
+  const key = genApiKey();
+  await env.DB.prepare("UPDATE customers SET api_key=? WHERE id=?").bind(key, customer.id).run();
+  return json({ ok: true, apiKey: key, endpoint: (env.PUBLIC_BASE || "") + "/api/v1/upload" });
+}
+
+/* ---------- 免费试用开通（无卡密，按 IP 限注册防薅） ---------- */
+async function handleFreeSignup(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const password = String(body.password || "");
+  if (password.length < 8) return json({ error: "请设至少 8 位密码" }, 400);
+  const ip = clientIp(request);
+  const max = envNumber(env, "FREE_SIGNUP_MAX", 3), win = envNumber(env, "FREE_SIGNUP_WINDOW", 86400);
+  const lim = limiter(env, "freesignup:" + ip);
+  if (lim) {
+    const c = await (await lim.fetch("https://do/check?max=" + max + "&lock=" + win)).json();
+    if (c.locked) return json({ error: "试用注册太频繁，请 " + Math.ceil(c.retryIn / 3600) + " 小时后再试，或直接购买正式卡" }, 429);
+  }
+  let card = "";
+  for (let i = 0; i < 5; i++) {
+    const hex = Array.from(crypto.getRandomValues(new Uint8Array(6))).map((b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+    const cand = "FREE-" + hex.slice(0, 4) + "-" + hex.slice(4, 8) + "-" + hex.slice(8, 12);
+    const dup = await env.DB.prepare("SELECT 1 FROM customers WHERE card=?").bind(cand).first();
+    if (!dup) { card = cand; break; }
+  }
+  if (!card) return json({ error: "注册繁忙，请重试" }, 503);
+  const now = Math.floor(Date.now() / 1000);
+  const pwHash = await hashPassword(password);
+  const ins = await env.DB.prepare(
+    "INSERT INTO customers (card, tier, password_hash, img_limit, byte_limit, expires_at, status, created_at) VALUES (?,?,?,?,?,NULL,'active',?)"
+  ).bind(card, "free", pwHash, 9999999, TIERS.free.byteLimit, now).run();
+  if (lim) await lim.fetch("https://do/fail?max=" + max + "&lock=" + win); // 每次成功注册计一次，达上限即锁该 IP
+  const token = await signSession(env, ins.meta.last_row_id, card);
+  return json({ ok: true, token, tier: "free", card, firstTime: true });
 }
 
 /* ---------- 大文件分片上传（R2 multipart，绕过 Worker 100MB 限制） ---------- */
@@ -537,11 +616,24 @@ async function handleAdminList(env) {
     status: c.status, createdAt: c.created_at ? new Date(c.created_at * 1000).toISOString() : null,
   }));
   const totalBytes = customers.reduce((s, c) => s + Number(c.usedBytes || 0), 0);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const rawRows = rows.results || [];
+  const since = (days) => rawRows.filter((c) => Number(c.created_at || 0) >= nowSec - days * 86400).length;
+  const tierCount = (t) => customers.filter((c) => c.tier === t).length;
+  const paid = tierCount("basic") + tierCount("pro");
+  const free = tierCount("free");
+  // 快到期（7 天内、且还没过期）——续费召回的目标名单
+  const expiringSoon = rawRows.filter((c) => c.expires_at && Number(c.expires_at) > nowSec && Number(c.expires_at) <= nowSec + 7 * 86400).length;
   const stats = {
     total: customers.length,
     active: customers.filter((c) => c.status === "active").length,
     totalFiles: customers.reduce((s, c) => s + Number(c.files || 0), 0),
     totalGB: fmtGB(totalBytes),
+    // 获客漏斗指标
+    free, paid, basic: tierCount("basic"), pro: tierCount("pro"),
+    new7: since(7), new30: since(30),
+    convRate: (free + paid) > 0 ? Math.round(paid / (free + paid) * 100) : 0, // 付费占比(粗略转化率)
+    expiringSoon,
   };
   return json({ customers, stats });
 }
@@ -624,8 +716,10 @@ export default {
     request.__ctx = ctx;
 
     if (path === "/health") return json({ ok: true, service: "tuku", version: VERSION });
-    if (path === "/" || path === "/index.html") return htmlResponse(PAGE_HTML);
-    if (path === "/scfw") return htmlResponse(ADMIN_HTML);
+    if (path === "/" || path === "/index.html") return htmlResponse(PAGE_HTML, env);
+    if (path === "/scfw") return htmlResponse(ADMIN_HTML, env);
+    if (path === "/privacy") return htmlResponse(PRIVACY_HTML, env);
+    if (path === "/terms") return htmlResponse(TERMS_HTML, env);
 
     // 图片直链（公开）
     const im = path.match(/^\/i\/([A-Za-z0-9_-]+)$/);
@@ -635,6 +729,14 @@ export default {
     if (fm) return serveFile(request, env, Number(fm[1]), fm[2]);
 
     try {
+      // 开发者 API：PicGo / 兰空(Lsky) 兼容上传，用 api_key（Bearer tuku_...）鉴权，不走会话
+      if (request.method === "POST" && path === "/api/v1/upload") {
+        return await handleApiUpload(request, env);
+      }
+      // 免费试用开通：无需卡密，按 IP 限注册防薅
+      if (request.method === "POST" && path === "/api/free-signup") {
+        return await handleFreeSignup(request, env);
+      }
       // 登录/开通：带暴破锁
       if (request.method === "POST" && path === "/api/login") {
         const ip = clientIp(request);
@@ -673,6 +775,8 @@ export default {
       const customer = auth.customer;
 
       if (request.method === "GET" && path === "/api/me") return handleMe(request, env, customer);
+      if (request.method === "GET" && path === "/api/apikey") return await handleGetApiKey(env, customer);
+      if (request.method === "POST" && path === "/api/apikey") return await handleRotateApiKey(env, customer);
       if (request.method === "POST" && path === "/api/upload") return await handleUpload(request, env, customer);
       if (request.method === "POST" && path === "/api/mpu/create") return await handleMpuCreate(request, env, customer);
       if (request.method === "POST" && path === "/api/mpu/part") return await handleMpuPart(request, env, customer, url);
@@ -855,16 +959,175 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 .batch.show{transform:translateY(0)}
 .ftitle{width:100%}
 }
+/* ---- 落地页 ---- */
+.lp{max-width:1080px;margin:0 auto;padding:22px}
+.lpnav{display:flex;align-items:center;gap:12px;padding:8px 2px 0}
+.lpnav .brand{display:flex;align-items:center;gap:10px;font-size:1.25rem;font-weight:800}
+.lpnav .sp{margin-left:auto}
+.lpnav a.nl{color:var(--mut);font-weight:600;padding:8px 12px;border-radius:9px;cursor:pointer}
+.lpnav a.nl:hover{color:var(--ink);background:rgba(255,255,255,.05)}
+.hero{text-align:center;padding:64px 16px 30px}
+.hero .tagline{display:inline-block;font-size:.8rem;color:#c9beff;border:1px solid rgba(124,108,255,.4);background:rgba(124,108,255,.12);border-radius:999px;padding:5px 14px;margin-bottom:20px}
+.hero h1{font-size:2.6rem;line-height:1.18;font-weight:900;letter-spacing:-.5px;margin-bottom:16px}
+.hero h1 .grad{background:linear-gradient(120deg,#a78bfa,#6d5efc 60%,#34D39A);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.hero p.sub{max-width:600px;margin:0 auto 26px;color:#aeb6c6;font-size:1.08rem}
+.hero .cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.hero .cta button,.hero .cta a{font-size:1rem;padding:13px 24px;border-radius:12px}
+.hero .hint{margin-top:14px;color:var(--mut);font-size:.85rem}
+.sect{padding:34px 0}
+.sect h2{text-align:center;font-size:1.5rem;font-weight:800;margin-bottom:6px}
+.sect .lead{text-align:center;color:var(--mut);margin-bottom:26px}
+.feat{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.fcard{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px;box-shadow:0 12px 40px rgba(0,0,0,.28)}
+.fcard .fi{font-size:1.7rem;margin-bottom:10px}
+.fcard h3{font-size:1.02rem;margin-bottom:6px}
+.fcard p{color:#aeb6c6;font-size:.9rem}
+.plans{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;align-items:stretch}
+.plan{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:24px 22px;display:flex;flex-direction:column;position:relative}
+.plan.hot{border-color:rgba(124,108,255,.55);box-shadow:0 0 0 1px rgba(124,108,255,.35),0 18px 50px rgba(109,94,252,.18)}
+.plan .pop{position:absolute;top:-11px;left:50%;transform:translateX(-50%);font-size:.72rem;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--g2),var(--g1));padding:3px 12px;border-radius:999px}
+.plan .pname{font-size:1.05rem;font-weight:800;margin-bottom:4px}
+.plan .pcap{font-size:2rem;font-weight:900;font-variant-numeric:tabular-nums;margin:6px 0}
+.plan .pcap small{font-size:.9rem;color:var(--mut);font-weight:600}
+.plan ul{list-style:none;margin:14px 0 20px;display:grid;gap:9px}
+.plan li{color:#c3cad6;font-size:.9rem;padding-left:22px;position:relative}
+.plan li:before{content:"✓";position:absolute;left:0;color:var(--ok);font-weight:800}
+.plan .pf{margin-top:auto}
+.plan .pf button,.plan .pf a{width:100%;justify-content:center;display:inline-flex;padding:12px}
+.devbox{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:26px;display:grid;grid-template-columns:1.2fr 1fr;gap:24px;align-items:center}
+.devbox h2{text-align:left;margin-bottom:10px}
+.devbox p{color:#aeb6c6;font-size:.95rem;margin-bottom:8px}
+.devbox .code{background:#0a0b10;border:1px solid var(--line);border-radius:12px;padding:14px 16px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.82rem;color:#c9beff;overflow-x:auto;white-space:pre;line-height:1.7}
+.lpfoot{border-top:1px solid var(--line);margin-top:30px;padding:24px 2px;display:flex;gap:18px;flex-wrap:wrap;align-items:center;color:var(--mut);font-size:.85rem}
+.lpfoot a{color:var(--mut);cursor:pointer}
+.lpfoot a:hover{color:var(--ink)}
+.lpfoot .sp{margin-left:auto}
+.cardbox{background:rgba(52,211,153,.08);border:1px solid rgba(52,211,153,.35);border-radius:12px;padding:14px;margin:10px 0;text-align:center}
+.cardbox .cn{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:1.1rem;font-weight:800;color:#7ee7b8;letter-spacing:1px;word-break:break-all}
+.banner{display:flex;align-items:center;gap:12px;background:linear-gradient(135deg,rgba(243,180,76,.14),rgba(242,114,111,.1));border:1px solid rgba(243,180,76,.35);border-radius:12px;padding:12px 16px;margin-bottom:18px;font-size:.9rem}
+.banner.free{background:linear-gradient(135deg,rgba(109,94,252,.16),rgba(168,85,247,.1));border-color:rgba(124,108,255,.4)}
+.banner .bx{margin-left:auto;flex-shrink:0}
+.banner .bx button{padding:8px 14px;font-size:.82rem}
+@media(max-width:820px){
+.hero h1{font-size:2rem}
+.feat{grid-template-columns:1fr}
+.plans{grid-template-columns:1fr}
+.devbox{grid-template-columns:1fr}
+.lpnav a.nl.hideM{display:none}
+}
 </style></head><body><div class="bg"></div>
 
-<div id="loginView" class="login"><div class="card">
-  <div class="brand"><span class="logo">存</span>存链</div>
-  <div class="muted">第一次用：输入卡号 + 给自己设个密码，即完成开通。以后凭卡号+密码登录。</div>
-  <input id="card" placeholder="卡号 CM-XXXX-XXXX-XXXX" autocomplete="off">
-  <input id="pw" type="password" placeholder="访问密码（首次开通请设 ≥8 位）">
-  <button class="pri" id="loginBtn" style="width:100%">进入</button>
-  <div id="loginErr" class="muted" style="color:var(--bad);min-height:20px"></div>
-</div></div>
+<div id="loginView">
+  <div class="lp">
+    <nav class="lpnav">
+      <div class="brand"><span class="logo">存</span>存链</div>
+      <span class="sp"></span>
+      <a class="nl hideM" id="navFeat">功能</a>
+      <a class="nl hideM" id="navPrice">价格</a>
+      <a class="nl hideM" id="navDev">开发者</a>
+      <a class="nl" id="navLogin">登录</a>
+    </nav>
+    <header class="hero">
+      <span class="tagline">图床 · 网盘 · 开发者直传，一站搞定</span>
+      <h1>把文件与图片，<span class="grad">安心托管</span>在一条链接里</h1>
+      <p class="sub">拖拽即传、粘贴即传，自动生成直链 / Markdown / HTML；大文件断点续传，视频音频在线预览。支持 PicGo / Typora 一键直传，写博客配图从此不折腾。</p>
+      <div class="cta">
+        <button class="pri" id="heroFree">🚀 免费试用 · 500MB</button>
+        <a href="__BUY_URL__" target="_blank" rel="noopener"><button>购买正式版</button></a>
+      </div>
+      <div class="hint">免费档无需卡密，设个密码即可开始 · 已有卡号？<a class="nl" id="heroLogin" style="display:inline;color:#a78bfa;padding:2px 4px">点此登录 / 开通</a></div>
+    </header>
+
+    <section class="sect" id="secFeat">
+      <h2>为什么选存链</h2>
+      <div class="lead">省心、够快、好看——把自建图床该有的都做到位</div>
+      <div class="feat">
+        <div class="fcard"><div class="fi">⚡</div><h3>拖拽 / 粘贴即传</h3><p>拖进来、Ctrl+V 粘贴截图就上传，自动压缩、可加水印，秒出直链。</p></div>
+        <div class="fcard"><div class="fi">🎬</div><h3>不止图片</h3><p>视频、音频、PDF、压缩包任意文件；视频音频支持在线拖动预览。</p></div>
+        <div class="fcard"><div class="fi">🧩</div><h3>大文件断点续传</h3><p>大文件自动分片直传，断网重拖从断点继续，不用从头再来。</p></div>
+        <div class="fcard"><div class="fi">🔗</div><h3>多格式链接</h3><p>一键复制直链 / Markdown / HTML / BBCode / 缩略图，配博客论坛都顺手。</p></div>
+        <div class="fcard"><div class="fi">🗂️</div><h3>相册与批量管理</h3><p>相册归类、多选批量删除移动、搜索排序、灯箱看大图，文件不再乱。</p></div>
+        <div class="fcard"><div class="fi">🔒</div><h3>私密可靠</h3><p>文件不公开、直链带签名令牌防枚举；删除真删，存储对账兜底不留孤儿。</p></div>
+      </div>
+    </section>
+
+    <section class="sect" id="secPrice">
+      <h2>简单透明的价格</h2>
+      <div class="lead">先免费试用，用顺手了再升级；容量不够随时扩</div>
+      <div class="plans">
+        <div class="plan">
+          <div class="pname">存链-免费</div>
+          <div class="pcap">500<small> MB</small></div>
+          <ul><li>无需卡密，设密码即用</li><li>图片 / 文件通用托管</li><li>图片带品牌水印</li><li>体验全部核心功能</li></ul>
+          <div class="pf"><button id="planFree">免费开始</button></div>
+        </div>
+        <div class="plan hot">
+          <div class="pop">最受欢迎</div>
+          <div class="pname">存链-基础</div>
+          <div class="pcap">5<small> GB</small></div>
+          <ul><li>无水印</li><li>大文件分片直传</li><li>开发者 API / PicGo 直传</li><li>相册与批量管理</li></ul>
+          <div class="pf"><a href="__BUY_URL__" target="_blank" rel="noopener"><button class="pri">购买基础版</button></a></div>
+        </div>
+        <div class="plan">
+          <div class="pname">存链-专业</div>
+          <div class="pcap">50<small> GB</small></div>
+          <ul><li>基础版全部能力</li><li>10 倍容量</li><li>适合团队 / 重度使用</li><li>优先支持</li></ul>
+          <div class="pf"><a href="__BUY_URL__" target="_blank" rel="noopener"><button>购买专业版</button></a></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="sect" id="secDev">
+      <div class="devbox">
+        <div>
+          <h2>开发者 &amp; 博主友好</h2>
+          <p>生成 API 密钥，配到 PicGo「兰空图床」或 Typora，写作时截图即传、自动回填直链，工作流零打断。</p>
+          <p class="muted">登录后在「设置 → 开发者 API」一键获取密钥与配置说明。</p>
+        </div>
+        <div class="code">POST https://link.aistela.com/api/v1/upload
+Authorization: Bearer tuku_****
+form-data:  file=@shot.png
+
+→ { "data": { "links": {
+     "url": "https://link.aistela.com/i/xxxx"
+   } } }</div>
+      </div>
+    </section>
+
+    <footer class="lpfoot">
+      <span>© 存链 · link.aistela.com</span>
+      <a href="/privacy">隐私政策</a>
+      <a href="/terms">服务条款</a>
+      <span class="sp"></span>
+      <a href="__BUY_URL__" target="_blank" rel="noopener">购买 / 续费</a>
+    </footer>
+  </div>
+
+  <div class="overlay" id="loginOverlay"><div class="modal">
+    <div class="brand" style="display:flex;align-items:center;gap:10px;font-size:1.2rem;font-weight:800;margin-bottom:6px"><span class="logo">存</span>登录 / 开通</div>
+    <div class="muted" style="margin-bottom:12px">已有卡号：输入卡号+密码登录；首次用该卡：输入卡号并设 ≥8 位密码即完成开通。</div>
+    <input id="card" placeholder="卡号 CM-XXXX-XXXX-XXXX" autocomplete="off" style="margin-bottom:10px">
+    <input id="pw" type="password" placeholder="访问密码（首次开通请设 ≥8 位）" style="margin-bottom:12px">
+    <button class="pri" id="loginBtn" style="width:100%">进入</button>
+    <div id="loginErr" class="muted" style="color:var(--bad);min-height:20px;margin-top:6px"></div>
+    <div class="muted" style="margin-top:8px;text-align:center">没有卡号？<a class="nl" id="toFree" style="display:inline;color:#a78bfa;padding:2px">免费试用 ›</a> · <a href="__BUY_URL__" target="_blank" rel="noopener" style="color:#a78bfa">购买 ›</a></div>
+  </div></div>
+
+  <div class="overlay" id="freeOverlay"><div class="modal">
+    <div class="brand" style="display:flex;align-items:center;gap:10px;font-size:1.2rem;font-weight:800;margin-bottom:6px"><span class="logo">存</span>免费试用</div>
+    <div class="muted" style="margin-bottom:12px" id="freeIntro">无需卡密。设一个密码，我们当场给你生成一个账号（500MB，图片带水印）。请记好卡号，下次凭它+密码登录。</div>
+    <div id="freeForm">
+      <input id="fpw" type="password" placeholder="给账号设个密码（≥8 位）" style="margin-bottom:12px">
+      <button class="pri" id="freeBtn" style="width:100%">生成我的账号并进入</button>
+      <div id="freeErr" class="muted" style="color:var(--bad);min-height:20px;margin-top:6px"></div>
+    </div>
+    <div id="freeDone" class="hide">
+      <div class="muted">这是你的登录账号，请截图或抄下来保存：</div>
+      <div class="cardbox"><div class="cn" id="freeCard">—</div></div>
+      <button class="pri" id="freeEnter" style="width:100%">我已保存，进入</button>
+    </div>
+  </div></div>
+</div>
 
 <div id="appShell" class="shell hide">
   <div class="scrim" id="scrim"></div>
@@ -878,6 +1141,7 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
     <div class="content">
 
       <div id="view-dash" class="view">
+        <div id="upBanner" class="banner hide"></div>
         <div class="cards">
           <div class="scard"><div class="ico i1">🖼️</div><div><div class="k">文件数量</div><div class="v" id="sCount">0</div></div></div>
           <div class="scard"><div class="ico i2">💾</div><div><div class="k">已用容量</div><div class="v" id="sUsed">0</div></div></div>
@@ -945,6 +1209,7 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 <div class="overlay" id="renameOverlay"><div class="modal"><h3>重命名</h3><input id="renameInput" placeholder="新文件名"><div class="foot"><button id="renCancel">取消</button><button class="pri" id="renSave">保存</button></div></div></div>
 <div class="overlay" id="moveOverlay"><div class="modal"><h3 id="moveTitle">移动到相册</h3><div class="acts" id="moveActs"></div><div class="foot"><button id="moveCancel">取消</button></div></div></div>
 <div class="overlay" id="setOverlay"><div class="modal"><h3>账户设置</h3><div id="setBody"></div><div class="foot"><button id="setLogout" class="danger">退出登录</button><button id="setClose">关闭</button></div></div></div>
+<div class="overlay" id="upgradeOverlay"><div class="modal"><h3>容量不够啦</h3><div class="muted" id="upgradeMsg" style="margin:8px 0 4px"></div><div class="muted" style="margin-bottom:6px">升级到 5GB / 50GB：去水印、扩容，并解锁开发者 API 直传。</div><div class="foot"><button id="upgradeClose">以后再说</button><a href="__BUY_URL__" target="_blank" rel="noopener"><button class="pri">去升级</button></a></div></div></div>
 <div class="toast" id="toast"></div>
 <script nonce="__CSP_NONCE__">
 var TOKEN=sessionStorage.getItem("tuku_token")||"";
@@ -971,12 +1236,36 @@ function api(path,opts){opts=opts||{};opts.headers=Object.assign({authorization:
 function logout(){sessionStorage.removeItem("tuku_token");TOKEN="";$("appShell").classList.add("hide");$("loginView").classList.remove("hide");$("who").textContent="—"}
 $("loginBtn").addEventListener("click",doLogin);
 $("pw").addEventListener("keydown",function(e){if(e.key==="Enter")doLogin()});
+function openLogin(){show("loginOverlay");setTimeout(function(){$("card").focus()},60)}
+function openFree(){$("freeForm").classList.remove("hide");$("freeDone").classList.add("hide");$("fpw").value="";$("freeErr").textContent="";show("freeOverlay");setTimeout(function(){$("fpw").focus()},60)}
+$("navLogin").addEventListener("click",openLogin);
+$("heroLogin").addEventListener("click",openLogin);
+$("heroFree").addEventListener("click",openFree);
+$("planFree").addEventListener("click",openFree);
+$("toFree").addEventListener("click",function(){hide("loginOverlay");openFree()});
+[["navFeat","secFeat"],["navPrice","secPrice"],["navDev","secDev"]].forEach(function(p){$(p[0]).addEventListener("click",function(){var el=$(p[1]);if(el)el.scrollIntoView({behavior:"smooth"})})});
+["loginOverlay","freeOverlay"].forEach(function(id){$(id).addEventListener("click",function(e){if(e.target===this)hide(id)})});
+$("fpw").addEventListener("keydown",function(e){if(e.key==="Enter")doFree()});
+$("freeBtn").addEventListener("click",doFree);
+$("freeEnter").addEventListener("click",function(){hide("freeOverlay");enterApp()});
+function doFree(){
+  var pw=$("fpw").value;$("freeErr").textContent="";
+  if(pw.length<8){$("freeErr").textContent="密码至少 8 位";return}
+  $("freeBtn").disabled=true;
+  fetch("/api/free-signup",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({password:pw})}).then(function(r){return r.json().then(function(d){
+    $("freeBtn").disabled=false;
+    if(!r.ok){$("freeErr").textContent=d.error||"注册失败";return}
+    TOKEN=d.token;sessionStorage.setItem("tuku_token",TOKEN);
+    $("freeCard").textContent=d.card;$("freeForm").classList.add("hide");$("freeDone").classList.remove("hide");
+  })}).catch(function(){$("freeBtn").disabled=false;$("freeErr").textContent="网络错误"});
+}
 function doLogin(){
   var card=$("card").value.trim(),pw=$("pw").value;
   $("loginErr").textContent="";
   fetch("/api/login",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({card:card,password:pw})}).then(function(r){return r.json().then(function(d){
     if(!r.ok){$("loginErr").textContent=d.error||"登录失败";return}
     TOKEN=d.token;sessionStorage.setItem("tuku_token",TOKEN);
+    hide("loginOverlay");
     if(d.firstTime)toast("开通成功，欢迎使用");
     enterApp();
   })}).catch(function(e){$("loginErr").textContent="网络错误"});
@@ -997,7 +1286,22 @@ function loadMe(){api("/api/me").then(function(d){ME=d;
   var bar=$("dBar");bar.style.width=(pct<1.5&&pct>0?1.5:pct).toFixed(1)+"%";bar.className=pct>=95?"full":pct>=80?"warn":"";
   $("dUseTxt").textContent=fmtSize(d.usedBytes)+" / "+fmtSize(d.byteLimit);
   $("dPct").textContent=pct.toFixed(pct<10?1:0)+"%";
+  renderUpBanner(d);applyTierUI();
 }).catch(function(){})}
+function renderUpBanner(d){
+  var el=$("upBanner");if(!el)return;
+  var days=null;if(d.expiresAt){days=Math.ceil((new Date(d.expiresAt).getTime()-Date.now())/86400000)}
+  var pct=d.byteLimit>0?d.usedBytes/d.byteLimit*100:0,html="",cls="banner";
+  if(d.tier==="free"){cls="banner free";html="<span>🎁 你正在用<b>免费档</b>（500MB，图片带水印）。升级去水印、扩容到 5GB / 50GB。</span><span class='bx'><a href='__BUY_URL__' target='_blank' rel='noopener'><button class='pri'>升级</button></a></span>";}
+  else if(days!=null&&days<=7){html="<span>⏰ 账号将在 <b>"+(days<0?0:days)+" 天</b>后到期，续费以免中断使用。</span><span class='bx'><a href='__BUY_URL__' target='_blank' rel='noopener'><button class='pri'>续费</button></a></span>";}
+  else if(pct>=90){html="<span>📦 容量已用 <b>"+Math.round(pct)+"%</b>，快满了。清理文件或升级扩容。</span><span class='bx'><a href='__BUY_URL__' target='_blank' rel='noopener'><button class='pri'>扩容</button></a></span>";}
+  if(html){el.innerHTML=html;el.className=cls;el.classList.remove("hide")}else{el.classList.add("hide")}
+}
+function applyTierUI(){
+  var free=ME&&ME.tier==="free",cmp=$("cmp"),wm=$("wm");if(!cmp||!wm)return;
+  if(free){cmp.checked=true;cmp.disabled=true;if(!wm.value)wm.value="存链 link.aistela.com";wm.readOnly=true;wm.title="免费档图片带品牌水印，升级后可去除";}
+  else{cmp.disabled=false;wm.readOnly=false;wm.title="";}
+}
 function renderRecent(){
   var box=$("recent");if(!box)return;
   var arr=ALLFILES.slice().sort(function(a,b){return (b.uploaded_at||0)-(a.uploaded_at||0)}).slice(0,10);
@@ -1139,11 +1443,34 @@ function delImgs(ids){
 function reloadFiles(){return Promise.all([loadFiles(),loadAlbums()]).then(function(){renderNav();renderFiles();loadMe()})}
 function newAlbum(){var name=prompt("相册名字");if(!name)return;api("/api/albums",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name:name})}).then(function(){return loadAlbums()}).then(function(){renderNav();toast("已新建相册")}).catch(function(e){toast(e.message)})}
 function delAlbum(id){if(!confirm("删除相册？里面的文件会变成未分组，不会删文件。"))return;api("/api/albums/"+id,{method:"DELETE"}).then(function(){return loadAlbums()}).then(function(){navTo({type:"all"})}).catch(function(e){toast(e.message)})}
+var API_KEY=null;
 function openSettings(){var b=$("setBody");b.innerHTML="";closeDrawer();
   var row=function(k,v){var d=document.createElement("div");d.className="info";d.innerHTML="<span class='il'>"+k+"</span><span>"+esc(v)+"</span>";b.appendChild(d)};
   if(ME){row("档位",ME.tierLabel);row("卡号",ME.card);row("到期",ME.expiresAt?ME.expiresAt.slice(0,10):"永久");row("已用",fmtSize(ME.usedBytes)+" / "+fmtSize(ME.byteLimit))}
-  show("setOverlay");
+  var up=document.createElement("div");up.style.margin="12px 0 4px";
+  up.innerHTML="<a href='__BUY_URL__' target='_blank' rel='noopener'><button class='pri' style='width:100%'>"+(ME&&ME.tier==="free"?"升级去水印 / 扩容":"续费 / 升级")+"</button></a>";b.appendChild(up);
+  var h=document.createElement("div");h.style.cssText="font-weight:700;margin:16px 0 8px";h.textContent="开发者 API（PicGo / Typora 直传）";b.appendChild(h);
+  var apiBox=document.createElement("div");apiBox.id="apiBox";apiBox.innerHTML="<div class='muted'>加载中…</div>";b.appendChild(apiBox);
+  var links=document.createElement("div");links.className="muted";links.style.marginTop="16px";links.style.textAlign="center";
+  links.innerHTML="<a href='/privacy' target='_blank' style='color:var(--mut)'>隐私政策</a> · <a href='/terms' target='_blank' style='color:var(--mut)'>服务条款</a>";b.appendChild(links);
+  loadApiKey();show("setOverlay");
 }
+function loadApiKey(){api("/api/apikey").then(function(d){if(d.locked){var x=$("apiBox");if(x)x.innerHTML="<div class='muted' style='line-height:1.7'>🔒 开发者 API 为付费功能。升级到基础版即可用 PicGo / Typora 直传。</div><a href='__BUY_URL__' target='_blank' rel='noopener'><button class='pri sm' style='margin-top:8px'>升级解锁</button></a>";return}API_KEY=d.apiKey;renderApiBox(d.apiKey,d.endpoint)}).catch(function(e){var x=$("apiBox");if(x)x.innerHTML="<div class='muted'>获取失败："+esc(e.message)+"</div>"})}
+function renderApiBox(key,endpoint){
+  var box=$("apiBox");if(!box)return;box.innerHTML="";API_KEY=key;
+  var ep=document.createElement("div");ep.className="info";ep.innerHTML="<span class='il'>上传地址</span><span class='mono' style='word-break:break-all'>"+esc(endpoint)+"</span>";box.appendChild(ep);
+  var kv=document.createElement("div");kv.className="cval";var inp=document.createElement("input");inp.readOnly=true;inp.className="mono";inp.value=key||"（尚未生成）";
+  var cp=document.createElement("button");cp.className="sm";cp.textContent=key?"复制":"生成";cp.onclick=function(){if(key){navigator.clipboard.writeText(key).then(function(){toast("密钥已复制")})}else{rotateApiKey(false)}};
+  kv.appendChild(inp);kv.appendChild(cp);box.appendChild(kv);
+  if(key){var acts=document.createElement("div");acts.style.marginTop="8px";var rot=document.createElement("button");rot.className="sm";rot.textContent="重置密钥";rot.onclick=function(){rotateApiKey(true)};acts.appendChild(rot);box.appendChild(acts)}
+  var hint=document.createElement("div");hint.className="muted";hint.style.cssText="margin-top:10px;line-height:1.7";
+  hint.innerHTML="PicGo →「兰空图床(Lsky)」：服务地址填 <b class='mono'>"+esc(endpoint.replace("/api/v1/upload",""))+"</b>，Token 填上面的密钥，其余默认即可。<br>Typora → 偏好设置 → 图像 → 上传服务选 PicGo。";box.appendChild(hint);
+}
+function rotateApiKey(hasOld){
+  if(hasOld&&!confirm("重置后旧密钥立即失效，需在 PicGo 等处更新。继续？"))return;
+  api("/api/apikey",{method:"POST"}).then(function(d){API_KEY=d.apiKey;renderApiBox(d.apiKey,d.endpoint);toast("已生成新密钥")}).catch(function(e){toast(e.message)});
+}
+function openUpgrade(msg){$("upgradeMsg").textContent=msg||"当前容量已满。";show("upgradeOverlay")}
 var drop=$("drop"),fileInput=$("file");
 drop.addEventListener("click",function(){fileInput.click()});
 fileInput.addEventListener("change",function(){uploadFiles(fileInput.files);fileInput.value=""});
@@ -1225,9 +1552,9 @@ function uploadFiles(files){
   var pc=$("progress");pc.classList.remove("hide");pc.innerHTML="";
   var doCompress=$("cmp").checked,wm=$("wm").value.trim();
   var albumId=(NAV.album!=null&&NAV.type==null)?NAV.album:null;
-  var done=0,fail=0;
+  var done=0,fail=0,quotaHit=false;
   var runOne=function(i){
-    if(i>=files.length){toast("完成 "+done+" 个"+(fail?("，失败 "+fail):""));reloadFiles();setTimeout(function(){if(!fail)pc.classList.add("hide")},1600);return}
+    if(i>=files.length){toast("完成 "+done+" 个"+(fail?("，失败 "+fail):""));reloadFiles();setTimeout(function(){if(!fail)pc.classList.add("hide")},1600);if(quotaHit)openUpgrade("容量不足，剩余空间放不下这次上传。");return}
     var f=files[i];
     var item=document.createElement("div");item.className="pitem";
     item.innerHTML="<div class='pn'><span>"+esc(f.name)+"</span><span class='pct'>0%</span></div><div class='pbar'><i></i></div>";
@@ -1236,7 +1563,7 @@ function uploadFiles(files){
     (doCompress?compressImage(f,2560,0.85,wm):Promise.resolve(f)).then(function(uf){
       var prog=function(p){var v=Math.round(p*100);bar.style.width=v+"%";pct.textContent=v+"%"};
       return uf.size>90*1024*1024 ? multipartUpload(uf,albumId,prog) : xhrUpload(uf,albumId,prog);
-    }).then(function(){done++;item.classList.add("done");pct.textContent="完成"}).catch(function(e){fail++;item.classList.add("err");pct.textContent=e.message}).then(function(){runOne(i+1)});
+    }).then(function(){done++;item.classList.add("done");pct.textContent="完成"}).catch(function(e){fail++;item.classList.add("err");pct.textContent=e.message;if(/容量不足|升级|扩容/.test(e.message||""))quotaHit=true}).then(function(){runOne(i+1)});
   };
   toast("上传中…");runOne(0);
 }
@@ -1247,7 +1574,8 @@ $("lbPrev").onclick=function(){lbNav(-1)};
 $("lbNext").onclick=function(){lbNav(1)};
 $("lightbox").addEventListener("click",function(e){if(e.target.id==="lightbox")hide("lightbox")});
 function closeOverlays(){var ov=document.querySelectorAll(".overlay");for(var i=0;i<ov.length;i++)ov[i].classList.remove("show")}
-["menuOverlay","copyOverlay","detailOverlay","renameOverlay","moveOverlay","setOverlay"].forEach(function(id){$(id).addEventListener("click",function(e){if(e.target===this)this.classList.remove("show")})});
+["menuOverlay","copyOverlay","detailOverlay","renameOverlay","moveOverlay","setOverlay","upgradeOverlay"].forEach(function(id){$(id).addEventListener("click",function(e){if(e.target===this)this.classList.remove("show")})});
+$("upgradeClose").onclick=function(){hide("upgradeOverlay")};
 $("cmClose").onclick=function(){hide("copyOverlay")};
 $("dClose").onclick=function(){hide("detailOverlay")};
 $("renCancel").onclick=function(){hide("renameOverlay")};
@@ -1420,6 +1748,12 @@ tr:hover td{background:rgba(255,255,255,.02)}
           <div class="scard"><div class="ico i3">🗂️</div><div><div class="k">文件总数</div><div class="v" id="sFiles">0</div></div></div>
           <div class="scard"><div class="ico i4">💾</div><div><div class="k">总用量</div><div class="v" id="sGB">0</div></div></div>
         </div>
+        <div class="cards">
+          <div class="scard"><div class="ico i1">🆕</div><div><div class="k">近 7 天新增</div><div class="v" id="sNew7">0</div></div></div>
+          <div class="scard"><div class="ico i2">💳</div><div><div class="k">付费 / 免费</div><div class="v" id="sPaidFree">0 / 0</div></div></div>
+          <div class="scard"><div class="ico i4">📈</div><div><div class="k">付费转化</div><div class="v" id="sConv">0%</div></div></div>
+          <div class="scard"><div class="ico i3">⏰</div><div><div class="k">7 天内到期</div><div class="v" id="sExp">0</div></div></div>
+        </div>
         <div class="panels">
           <div class="panel"><div class="ph">存储占用 Top 5</div><div id="topBox"></div></div>
           <div class="panel"><div class="ph">套餐分布</div><div id="distBox"></div></div>
@@ -1447,7 +1781,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 </div></div>
 <div class="overlay" id="editOverlay"><div class="modal">
   <h2>改客户</h2><div class="note" id="editWho" style="margin-bottom:6px"></div>
-  <label>套餐（改档位会套用该档默认容量）</label><select id="eTier"><option value="">不改</option><option value="basic">存链-基础</option><option value="pro">存链-专业</option></select>
+  <label>套餐（改档位会套用该档默认容量）</label><select id="eTier"><option value="">不改</option><option value="free">存链-免费</option><option value="basic">存链-基础</option><option value="pro">存链-专业</option></select>
   <label>容量上限（GB，留空=不改）</label><input id="eGB" type="number" placeholder="如 5 / 50 / 100">
   <label>到期日（留空=不改）</label><input id="eDate" type="date">
   <div class="foot"><button id="editCancel">取消</button><button class="pri" id="editSave">保存</button></div>
@@ -1491,13 +1825,18 @@ function showView(v){
 function load(){api("/customers").then(function(d){LIST=d.customers||[];STATS=d.stats;renderDash();renderChips();renderCust();$("navCnt").textContent=d.stats.total}).catch(function(e){var msg=e.message||"";if(msg.indexOf("授权")>=0||msg.indexOf("密钥")>=0){show("loginOverlay");$("loginErr").textContent=AK?"密钥不正确":""}else toast(msg)})}
 function renderDash(){
   var s=STATS;$("sTotal").textContent=s.total;$("sActive").textContent=s.active;$("sFiles").textContent=s.totalFiles;$("sGB").textContent=s.totalGB;
+  $("sNew7").textContent=s.new7!=null?s.new7:0;
+  $("sPaidFree").textContent=(s.paid!=null?s.paid:0)+" / "+(s.free!=null?s.free:0);
+  $("sConv").textContent=(s.convRate!=null?s.convRate:0)+"%";
+  $("sExp").textContent=s.expiringSoon!=null?s.expiringSoon:0;
   var top=LIST.slice().sort(function(a,b){return (b.usedBytes||0)-(a.usedBytes||0)}).slice(0,5);
   var tb=$("topBox");tb.innerHTML="";
   if(!top.length||!top[0].usedBytes){tb.innerHTML="<div class='muted'>还没有用量数据</div>"}
   else{top.forEach(function(c){var pct=c.byteLimit?Math.min(100,Math.round(c.usedBytes/c.byteLimit*100)):0;var d=document.createElement("div");d.className="toprow";d.innerHTML="<span class='mono'>"+esc(c.card)+"</span><span class='tb'><span class='pbar'><i class='"+(pct>=100?"full":"")+"' style='width:"+pct+"%'></i></span></span><span class='tv'>"+fmtSize(c.usedBytes)+"</span>";tb.appendChild(d)})}
-  var basic=LIST.filter(function(c){return c.tier==="basic"}).length,pro=LIST.filter(function(c){return c.tier==="pro"}).length,tot=basic+pro||1;
+  var free=LIST.filter(function(c){return c.tier==="free"}).length,basic=LIST.filter(function(c){return c.tier==="basic"}).length,pro=LIST.filter(function(c){return c.tier==="pro"}).length,tot=free+basic+pro||1;
   var db=$("distBox");db.innerHTML="";
   var mk=function(label,n,color){var pc=Math.round(n/tot*100);var d=document.createElement("div");d.style.marginBottom="14px";d.innerHTML="<div style='display:flex;justify-content:space-between;font-size:.85rem;margin-bottom:6px'><span>"+label+"</span><span class='muted'>"+n+" 个 · "+pc+"%</span></div><div class='usebar'><i style='width:"+pc+"%;background:"+color+"'></i></div>";db.appendChild(d)};
+  mk("存链-免费",free,"linear-gradient(90deg,#8A93A6,#aeb6c6)");
   mk("存链-基础",basic,"linear-gradient(90deg,#6d5efc,#a855f7)");
   mk("存链-专业",pro,"linear-gradient(90deg,#34D39A,#5DCAA5)");
 }
@@ -1550,3 +1889,68 @@ function closeDrawer(){$("side").classList.remove("open");$("scrim").classList.r
 document.addEventListener("keydown",function(e){if(e.key==="Escape"){hide("editOverlay");hide("confirmOverlay");closeDrawer()}});
 if(AK)load();else show("loginOverlay");
 </script></body></html>`;
+
+/* ---------- 信任页：隐私政策 / 服务条款（静态，落地页与运营台页脚引用） ---------- */
+function legalDoc(title, bodyHtml) {
+  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} · 存链</title><style>
+:root{--bg:#080910;--card:#10131c;--ink:#EEF1F7;--mut:#8A93A6;--line:rgba(255,255,255,.08);--g1:#a855f7;--g2:#6d5efc}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);line-height:1.75;-webkit-font-smoothing:antialiased}
+.wrap{max-width:760px;margin:0 auto;padding:40px 22px 80px}
+.brand{display:flex;align-items:center;gap:10px;font-size:1.2rem;font-weight:800;margin-bottom:8px}
+.logo{width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,var(--g2),var(--g1));display:flex;align-items:center;justify-content:center;font-weight:900;color:#fff}
+h1{font-size:1.5rem;margin:18px 0 6px}
+h2{font-size:1.05rem;margin:26px 0 8px;color:#c9beff}
+p,li{color:#c3cad6;font-size:.95rem}
+ul{margin:6px 0 6px 20px}
+.upd{color:var(--mut);font-size:.85rem;margin-bottom:8px}
+a{color:#a78bfa;text-decoration:none}
+a:hover{text-decoration:underline}
+.foot{margin-top:40px;padding-top:18px;border-top:1px solid var(--line);color:var(--mut);font-size:.85rem;display:flex;gap:16px;flex-wrap:wrap}
+</style></head><body><div class="wrap">
+<div class="brand"><span class="logo">存</span>存链</div>
+<h1>${title}</h1><div class="upd">最近更新：2026-07-12</div>
+${bodyHtml}
+<div class="foot"><a href="/">← 返回首页</a><a href="/privacy">隐私政策</a><a href="/terms">服务条款</a><span>© 存链 · link.aistela.com</span></div>
+</div></body></html>`;
+}
+const PRIVACY_HTML = legalDoc("隐私政策", `
+<p>我们把你托管文件的隐私放在第一位。这页用大白话说清楚我们存什么、怎么用、你有什么权利。</p>
+<h2>我们存什么</h2>
+<ul>
+<li><b>你上传的文件与图片本体</b>：图片存于 Cloudflare Images、其它文件存于 Cloudflare R2。</li>
+<li><b>元数据</b>：文件名、大小、类型、上传时间、所属相册，以及你的卡号与<b>密码的哈希值</b>（PBKDF2，明文密码我们不保存、也无法还原）。</li>
+</ul>
+<h2>你的文件是否公开</h2>
+<ul>
+<li>文件<b>不会</b>被列入任何公开目录，也不会被搜索到。</li>
+<li>只有持有你主动复制出去的直链的人才能访问；非图片直链带有不可枚举的签名令牌，改数字猜不到别人的文件。</li>
+<li>我们<b>不浏览、不分析、不倒卖</b>你的文件内容，也不会用于训练任何模型。</li>
+</ul>
+<h2>删除</h2>
+<p>你在后台删除文件时，我们会真实删除存储对象；万一某次存储侧删除失败，会进入对账队列，由定时任务（每 6 小时）补删，不做“只删记录、留着占空间”的假删除。</p>
+<h2>Cookie 与本地存储</h2>
+<p>我们不使用第三方追踪 Cookie。登录令牌仅保存在你浏览器的 sessionStorage 里，关闭标签即失效。</p>
+<h2>联系</h2>
+<p>对隐私有疑问，可通过你的购买/续费渠道联系我们：<a href="__BUY_URL__">__BUY_URL__</a>。</p>
+`);
+const TERMS_HTML = legalDoc("服务条款", `
+<p>使用「存链」即表示你已阅读并同意以下条款。</p>
+<h2>账号与开通</h2>
+<ul>
+<li>正式账号通过卡密（卡号）开通，首次开通时你自行设置访问密码；请妥善保管，密码遗失我们无法找回。</li>
+<li>免费试用账号无需卡密，容量受限、图片带品牌水印，仅供体验，我们保留调整或回收长期不活跃免费账号的权利。</li>
+</ul>
+<h2>可接受使用</h2>
+<ul>
+<li>不得上传、存储或分发违反所在地法律法规的内容，不得侵犯他人知识产权、隐私或合法权益。</li>
+<li>不得上传恶意程序，不得利用本服务实施攻击、滥发或其它危害网络安全的行为。</li>
+<li>对滥用、异常占用资源或危害服务稳定的账号，我们可暂停或终止服务。</li>
+</ul>
+<h2>容量、到期与续费</h2>
+<p>各档位的容量上限以产品页与后台显示为准。付费账号到期后将停用，续费后恢复。请通过官方购买入口 <a href="__BUY_URL__">__BUY_URL__</a> 购买与续费。</p>
+<h2>服务与责任</h2>
+<p>本服务按“现状”提供。我们尽力保障可用性与数据安全，并提供数据库时间点恢复能力，但对不可抗力或第三方基础设施故障导致的损失不承担超出你已付费用范围的责任。请对重要文件自行保留额外备份。</p>
+<h2>条款变更</h2>
+<p>我们可能不时更新本条款，重大变更会在产品内提示。继续使用即视为接受更新后的条款。</p>
+`);

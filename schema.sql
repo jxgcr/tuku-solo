@@ -9,12 +9,13 @@
 CREATE TABLE IF NOT EXISTS customers (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   card          TEXT UNIQUE NOT NULL,           -- 卡号（登录账号）
-  tier          TEXT NOT NULL,                  -- basic / pro
+  tier          TEXT NOT NULL,                  -- free / basic / pro
   password_hash TEXT,                           -- 首次开通时设的访问密码（PBKDF2）
   img_limit     INTEGER NOT NULL DEFAULT 9999999, -- 遗留列(第一期按张数)，现按容量，保留仅为兼容 INSERT
-  byte_limit    INTEGER,                        -- 容量上限（字节），按档位：basic=5GB, pro=50GB
+  byte_limit    INTEGER,                        -- 容量上限（字节），按档位：free=500MB, basic=5GB, pro=50GB
   expires_at    INTEGER,                        -- 到期时间戳（秒），null=不限
   status        TEXT NOT NULL DEFAULT 'active', -- active / disabled
+  api_key       TEXT,                           -- 开发者 API 密钥(tuku_...)，PicGo/Typora 直传用；null=未生成
   created_at    INTEGER NOT NULL
 );
 
@@ -51,3 +52,4 @@ CREATE INDEX IF NOT EXISTS idx_images_customer ON images(customer_id);
 CREATE INDEX IF NOT EXISTS idx_images_album ON images(album_id);
 CREATE INDEX IF NOT EXISTS idx_albums_customer ON albums(customer_id);
 CREATE INDEX IF NOT EXISTS idx_images_cf ON images(cf_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_apikey ON customers(api_key) WHERE api_key IS NOT NULL;
