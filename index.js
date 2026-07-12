@@ -745,7 +745,7 @@ drop.addEventListener("drop",function(e){e.preventDefault();drop.classList.remov
 // 客户端压缩图片（canvas 缩放 + 可选水印）。非图片/GIF 原样返回。
 function compressImage(file,maxDim,quality,wm){
   return new Promise(function(resolve){
-    if(!/^image\//.test(file.type)||file.type==="image/gif"){resolve(file);return}
+    if(String(file.type).indexOf("image/")!==0||file.type==="image/gif"){resolve(file);return}
     var url=URL.createObjectURL(file),img=new Image();
     img.onload=function(){
       URL.revokeObjectURL(url);
