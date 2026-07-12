@@ -621,9 +621,23 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px}
 .pill{border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:.82rem;background:rgba(255,255,255,.04);cursor:pointer}
 .pill.on{border-color:rgba(124,108,255,.55);background:rgba(124,108,255,.12)}
+.hero{display:grid;grid-template-columns:1.7fr 1fr 1fr;gap:20px;align-items:center;margin-bottom:18px}
+.hero .cell{display:flex;flex-direction:column;gap:3px;min-width:0}
+.hero .k{font-size:.74rem;color:var(--mut);letter-spacing:.02em}
+.hero .v{font-size:1.5rem;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.15}
+.hero .v.grad{background:linear-gradient(135deg,var(--g2),var(--g1));-webkit-background-clip:text;background-clip:text;color:transparent}
+.usebar{height:9px;background:rgba(255,255,255,.08);border-radius:5px;overflow:hidden;margin-top:9px}
+.usebar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--g2),var(--g1));border-radius:5px;transition:width .6s cubic-bezier(.2,.7,.2,1)}
+.usebar>i.warn{background:linear-gradient(90deg,#F3C24C,#fb7185)}
+.usebar>i.full{background:linear-gradient(90deg,#fb7185,#ef4444)}
+.tierbadge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:.7rem;font-weight:700;border:1px solid rgba(124,108,255,.4);background:rgba(124,108,255,.14);color:#c9beff;margin-left:4px}
+@media(max-width:640px){.hero{grid-template-columns:1fr 1fr}}
+.dropico{font-size:2.1rem;line-height:1;margin-bottom:8px;opacity:.9}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
-.tile{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
-.tile img{width:100%;height:120px;object-fit:cover;display:block;background:#000}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;transition:transform .18s,border-color .18s}
+.tile:hover{border-color:rgba(124,108,255,.45);transform:translateY(-2px)}
+.tile img{width:100%;height:120px;object-fit:cover;display:block;background:#000;transition:transform .3s}
+.tile:hover img{transform:scale(1.05)}
 .filebox{height:120px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:8px;background:#0a0b10}
 .ficon{font-size:2.4rem;line-height:1}
 .fname{font-size:.72rem;color:var(--mut);text-align:center;word-break:break-all;max-height:2.3em;overflow:hidden}
@@ -676,11 +690,16 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
   </div></div>
 
   <div id="appView" class="hide">
+    <div class="hero card">
+      <div class="cell"><span class="k">容量用量<span class="tierbadge" id="hTier">—</span></span><span class="v" id="hUse">0 / 0</span><div class="usebar"><i id="hBar"></i></div></div>
+      <div class="cell"><span class="k">文件数</span><span class="v grad" id="hCount">0</span></div>
+      <div class="cell"><span class="k">到期</span><span class="v" id="hExp" style="font-size:1.15rem">—</span></div>
+    </div>
     <div class="setbar">
       <label class="chk"><input type="checkbox" id="cmp" checked> 图片上传前压缩（省空间/更快）</label>
       <input id="wm" placeholder="水印文字（留空=无，仅加在图片上）" style="max-width:240px">
     </div>
-    <div class="drop" id="drop">拖文件到这里，或点击选择（图片/视频/音频/PDF/压缩包… 可多选）<input id="file" type="file" multiple class="hide"></div>
+    <div class="drop" id="drop"><div class="dropico">☁️</div><div><b>拖文件到这里</b>，或点击选择</div><div class="muted" style="font-size:.8rem;margin-top:4px">图片 / 视频 / 音频 / PDF / 压缩包… 可多选</div><input id="file" type="file" multiple class="hide"></div>
     <div id="progress" class="prog hide"></div>
     <div class="bar" id="albumBar"></div>
     <div class="grid" id="grid"></div>
@@ -714,7 +733,15 @@ function doLogin(){
   })}).catch(function(e){$("loginErr").textContent="网络错误"});
 }
 function enterApp(){$("loginView").classList.add("hide");$("appView").classList.remove("hide");loadMe();loadAlbums().then(loadImages)}
-function loadMe(){api("/api/me").then(function(d){$("who").textContent=d.tierLabel+" · 已用 "+d.usedGB+"/"+d.limitGB+"（"+d.count+" 个）"+(d.expiresAt?" · 到期 "+d.expiresAt.slice(0,10):"")}).catch(function(){})}
+function loadMe(){api("/api/me").then(function(d){
+  $("who").textContent=d.tierLabel+(d.expiresAt?" · 到期 "+d.expiresAt.slice(0,10):"");
+  $("hTier").textContent=d.tierLabel;
+  $("hUse").textContent=d.usedGB+" / "+d.limitGB;
+  $("hCount").textContent=d.count;
+  $("hExp").textContent=d.expiresAt?d.expiresAt.slice(0,10):"永久";
+  var pct=d.byteLimit>0?Math.min(100,d.usedBytes/d.byteLimit*100):0;
+  var bar=$("hBar");bar.style.width=(pct<2&&pct>0?2:pct).toFixed(1)+"%";bar.className=pct>=95?"full":pct>=80?"warn":"";
+}).catch(function(){})}
 function loadAlbums(){return api("/api/albums").then(function(d){ALBUMS=d.albums||[];renderAlbumBar()})}
 function renderAlbumBar(){
   var bar=$("albumBar");bar.innerHTML="";
