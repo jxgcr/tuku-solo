@@ -1088,27 +1088,43 @@ function xhrUpload(file,albumId,onprog){
     x.send(fd);
   });
 }
+function fileSig(file){return "tuku_mpu_"+encodeURIComponent(file.name)+"_"+file.size+"_"+(file.lastModified||0)}
+function mpuSave(sig,st){try{localStorage.setItem(sig,JSON.stringify(st))}catch(e){}}
+function mpuLoad(sig){try{var v=localStorage.getItem(sig);return v?JSON.parse(v):null}catch(e){return null}}
+function mpuClear(sig){try{localStorage.removeItem(sig)}catch(e){}}
+// 大文件分片上传，带断点续传(localStorage 记 uploadId+已传分片)+ 每片自动重试
 function multipartUpload(file,albumId,onprog){
   var CHUNK=40*1024*1024;
-  var key,uploadId,parts=[];
-  return api("/api/mpu/create",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({filename:file.name,mime:file.type||"application/octet-stream",size:file.size,album_id:albumId})}).then(function(init){
-    key=init.key;uploadId=init.uploadId;
-    var total=Math.ceil(file.size/CHUNK),uploaded=0;
-    function doPart(n){
-      if(n>total)return Promise.resolve();
-      var start=(n-1)*CHUNK,chunk=file.slice(start,Math.min(file.size,start+CHUNK));
+  var sig=fileSig(file);
+  var st=mpuLoad(sig),resumed=false;
+  function ensure(){
+    if(st&&st.uploadId&&st.key&&st.chunk===CHUNK&&Array.isArray(st.parts)){resumed=true;return Promise.resolve()}
+    return api("/api/mpu/create",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({filename:file.name,mime:file.type||"application/octet-stream",size:file.size,album_id:albumId})}).then(function(init){st={key:init.key,uploadId:init.uploadId,chunk:CHUNK,parts:[]};mpuSave(sig,st)});
+  }
+  return ensure().then(function(){
+    if(resumed&&st.parts.length&&onprog)toast("继续未完成的上传…");
+    var total=Math.ceil(file.size/CHUNK),done={};
+    st.parts.forEach(function(p){done[p.part]=true});
+    function reportBase(){if(onprog)onprog(Math.min(1,(st.parts.length*CHUNK)/file.size))}
+    reportBase();
+    function uploadPart(n,attempt){
       return new Promise(function(resolve,reject){
-        var x=new XMLHttpRequest();x.open("POST","/api/mpu/part?key="+encodeURIComponent(key)+"&uploadId="+encodeURIComponent(uploadId)+"&part="+n);x.setRequestHeader("authorization","Bearer "+TOKEN);
-        x.upload.onprogress=function(e){if(e.lengthComputable&&onprog)onprog(Math.min(1,(uploaded+e.loaded)/file.size))};
-        x.onload=function(){var d={};try{d=JSON.parse(x.responseText)}catch(e){}if(x.status>=200&&x.status<300){parts.push({part:d.part,etag:d.etag});uploaded=Math.min(file.size,n*CHUNK);if(onprog)onprog(uploaded/file.size);resolve()}else{if(x.status===401)logout();reject(new Error(d.error||("分片"+n+"失败")))}};
-        x.onerror=function(){reject(new Error("网络错误"))};
+        var start=(n-1)*CHUNK,chunk=file.slice(start,Math.min(file.size,start+CHUNK));
+        var x=new XMLHttpRequest();x.open("POST","/api/mpu/part?key="+encodeURIComponent(st.key)+"&uploadId="+encodeURIComponent(st.uploadId)+"&part="+n);x.setRequestHeader("authorization","Bearer "+TOKEN);
+        x.upload.onprogress=function(e){if(e.lengthComputable&&onprog){var base=st.parts.length*CHUNK;onprog(Math.min(1,(base+e.loaded)/file.size))}};
+        x.onload=function(){var d={};try{d=JSON.parse(x.responseText)}catch(e){}if(x.status>=200&&x.status<300){st.parts.push({part:d.part,etag:d.etag});mpuSave(sig,st);reportBase();resolve()}else{if(x.status===401)logout();reject(new Error(d.error||("分片"+n+"失败")))}};
+        x.onerror=function(){reject(new Error("网络中断"))};
         x.send(chunk);
-      }).then(function(){return doPart(n+1)});
+      }).catch(function(e){
+        if(attempt<3)return new Promise(function(r){setTimeout(r,900*attempt)}).then(function(){return uploadPart(n,attempt+1)});
+        throw e;
+      });
     }
-    return doPart(1);
+    function loop(n){if(n>total)return Promise.resolve();if(done[n])return loop(n+1);return uploadPart(n,1).then(function(){return loop(n+1)})}
+    return loop(1).catch(function(e){if(resumed)mpuClear(sig);throw e});
   }).then(function(){
-    return api("/api/mpu/complete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({key:key,uploadId:uploadId,parts:parts,filename:file.name,mime:file.type||"application/octet-stream",size:file.size,album_id:albumId})});
-  });
+    return api("/api/mpu/complete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({key:st.key,uploadId:st.uploadId,parts:st.parts,filename:file.name,mime:file.type||"application/octet-stream",size:file.size,album_id:albumId})});
+  }).then(function(r){mpuClear(sig);return r});
 }
 function uploadFiles(files){
   files=Array.prototype.slice.call(files||[]);if(!files.length)return;
