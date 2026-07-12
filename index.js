@@ -852,7 +852,7 @@ var Q="",SORT="new";
 var SEL={};
 var LB=[],LBI=0;
 var MENU_IM=null,REN_IM=null,MOVE_IDS=[],ME=null;
-var CATS=[["all","全部文件","🗂️"],["image","图片","🖼️"],["video","视频","🎬"],["audio","音频","🎵"],["doc","文档","📄"],["zip","压缩包","🗜️"]];
+var CATS=[["all","全部文件","🗂️"],["image","图片","🖼️"],["video","视频","🎬"],["audio","音频","🎵"],["doc","文档","📄"],["zip","压缩包","🗜️"],["other","其他","📎"]];
 function $(id){return document.getElementById(id)}
 function show(id){$(id).classList.add("show")}
 function hide(id){$(id).classList.remove("show")}
