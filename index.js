@@ -886,7 +886,7 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 .uchip{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:.85rem;color:var(--mut)}
 .uchip .dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok)}
 .content{padding:24px 32px;width:100%}
-.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:20px}
 .scard{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px;display:flex;align-items:center;gap:15px;box-shadow:0 12px 40px rgba(0,0,0,.32)}
 .scard .ico{width:52px;height:52px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:1.5rem;flex-shrink:0}
 .scard .ico.i1{background:rgba(109,94,252,.16)}
@@ -1181,7 +1181,7 @@ form-data:  file=@shot.png
     <div class="sidefoot"><div class="navitem" id="logoutBtn"><span class="ni">↩</span>退出登录</div></div>
   </aside>
   <div class="main">
-    <header class="topbar"><span class="burger" id="burger">☰</span><div class="pt" id="pageTitle">仪表盘</div><span class="sp"></span><div class="uchip"><span class="dot"></span><span id="who">—</span></div></header>
+    <header class="topbar"><span class="burger" id="burger">☰</span><div class="pt" id="pageTitle">我的云盘</div><span class="sp"></span><div class="uchip"><span class="dot"></span><span id="who">—</span></div></header>
     <div class="content">
 
       <div id="view-dash" class="view">
@@ -1197,6 +1197,7 @@ form-data:  file=@shot.png
             <div class="ph">容量用量</div>
             <div class="usebar"><i id="dBar"></i></div>
             <div class="usetxt"><span id="dUseTxt">0 / 0</span><span id="dPct" class="muted">0%</span></div>
+            <div id="catBars" style="margin-top:16px"></div>
             <button class="pri" id="goUpload" style="margin-top:18px">☁️ 上传文件</button>
           </div>
           <div class="panel">
@@ -1204,6 +1205,7 @@ form-data:  file=@shot.png
             <div class="info"><span class="il">档位</span><span class="tierbadge" id="iTier">—</span></div>
             <div class="info"><span class="il">卡号</span><span class="mono" id="iCard">—</span></div>
             <div class="info"><span class="il">到期</span><span id="iExp">—</span></div>
+            <div class="info"><span class="il">隐私</span><span>🔒 文件仅你可见，不公开</span></div>
           </div>
         </div>
         <div class="panel" style="margin-top:16px">
@@ -1377,17 +1379,32 @@ function navTo(spec){
   $("view-dash").classList.toggle("hide",VIEW!=="dash");
   $("view-upload").classList.toggle("hide",VIEW!=="upload");
   $("view-files").classList.toggle("hide",VIEW!=="files");
-  $("pageTitle").textContent=VIEW==="dash"?"仪表盘":VIEW==="upload"?"上传文件":"我的文件";
+  $("pageTitle").textContent=VIEW==="dash"?"我的云盘":VIEW==="upload"?"上传文件":"我的文件";
   renderNav();
-  if(VIEW==="dash"){loadMe();renderRecent()}
+  if(VIEW==="dash"){loadMe();renderRecent();renderCatBars()}
   if(VIEW==="files")renderFiles();
+}
+function renderCatBars(){
+  var box=$("catBars");if(!box)return;box.innerHTML="";
+  var tot=0,sums={};
+  ALLFILES.forEach(function(x){var t=typeOf(x),b=Number(x.bytes)||0;sums[t]=(sums[t]||0)+b;tot+=b});
+  if(!tot){box.innerHTML="<div class='muted' style='font-size:.8rem'>上传后这里会显示空间构成</div>";return}
+  var colors={image:"#a855f7",video:"#2dd4bf",audio:"#f3b44c",doc:"#6d5efc",zip:"#fb7185",other:"#8A93A6"};
+  CATS.forEach(function(c){
+    if(c[0]==="all")return;
+    var b=sums[c[0]]||0;if(!b)return;
+    var pc=Math.max(1,Math.round(b/tot*100));
+    var d=document.createElement("div");d.style.marginBottom="9px";
+    d.innerHTML="<div style='display:flex;justify-content:space-between;font-size:.78rem;color:var(--mut);margin-bottom:3px'><span>"+c[2]+" "+c[1]+"</span><span>"+fmtSize(b)+" · "+pc+"%</span></div><div class='pbar'><i style='width:"+pc+"%;background:"+colors[c[0]]+"'></i></div>";
+    box.appendChild(d);
+  });
 }
 function renderNav(){
   var nav=$("nav");nav.innerHTML="";
   var grp=function(t){var g=document.createElement("div");g.className="navgrp";g.textContent=t;nav.appendChild(g)};
   var item=function(icon,label,active,cnt,fn){var a=document.createElement("div");a.className="navitem"+(active?" on":"");a.innerHTML="<span class='ni'>"+icon+"</span>"+esc(label);if(cnt!=null){var c=document.createElement("span");c.className="cnt";c.textContent=cnt;a.appendChild(c)}a.onclick=fn;nav.appendChild(a)};
   grp("常规");
-  item("📊","仪表盘",VIEW==="dash",null,function(){navTo({view:"dash"})});
+  item("🏠","我的云盘",VIEW==="dash",null,function(){navTo({view:"dash"})});
   item("☁️","上传文件",VIEW==="upload",null,function(){navTo({view:"upload"})});
   grp("分类");
   CATS.forEach(function(c){item(c[2],c[1],VIEW==="files"&&NAV.type===c[0],catCount(c[0]),function(){navTo({type:c[0]})})});
@@ -1711,7 +1728,7 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 .uchip{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:.85rem;color:var(--mut)}
 .uchip .dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok)}
 .content{padding:24px 32px;width:100%}
-.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:20px}
 .scard{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px;display:flex;align-items:center;gap:15px;box-shadow:0 12px 40px rgba(0,0,0,.32)}
 .scard .ico{width:52px;height:52px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:1.5rem;flex-shrink:0}
 .scard .ico.i1{background:rgba(109,94,252,.16)}
