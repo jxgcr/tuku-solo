@@ -38,7 +38,7 @@ try {
     const content = src.slice(s, e);
     if (content.includes("${") || content.includes("`")) { console.warn("⚠ 跳过 " + name + " 前端求值检查(含 ${ 或反引号，无法安全求值)"); continue; }
     const html = eval("`" + content + "`"); // 复现下发时的转义处理
-    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((x) => x[1]).join("\n;\n");
+    const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map((x) => x[1]).join("\n;\n");
     if (!scripts.trim()) continue;
     const tmp = ".verify_" + name + ".js";
     writeFileSync(tmp, scripts);

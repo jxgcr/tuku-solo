@@ -22,11 +22,15 @@ function json(data, status = 200) {
   });
 }
 function htmlResponse(body) {
-  return new Response(body, {
+  // 每次请求生成随机 nonce，注入 <script nonce> 并写进 CSP，从而去掉 script-src 的 'unsafe-inline'
+  // （脚本仍内联，不拆文件、无缓存坑；页面 no-store 不缓存，nonce 逐请求刷新）。
+  const nonce = btoa(String.fromCharCode.apply(null, crypto.getRandomValues(new Uint8Array(16)))).replace(/[+/=]/g, "");
+  const html = String(body).split("__CSP_NONCE__").join(nonce);
+  return new Response(html, {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://imagedelivery.net; connect-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'",
+      "content-security-policy": "default-src 'self'; script-src 'self' 'nonce-" + nonce + "'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://imagedelivery.net; connect-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'",
       "x-content-type-options": "nosniff",
       "x-frame-options": "DENY",
       "referrer-policy": "no-referrer",
@@ -251,14 +255,21 @@ async function handleUpload(request, env, customer) {
     const data = await imagesApi(env, "", { method: "POST", body: fd });
     if (!data.success) return json({ error: (data.errors && data.errors[0] && data.errors[0].message) || "图片上传失败" }, 502);
     const cfId = data.result.id;
-    const ins = await env.DB.prepare(
-      "INSERT INTO images (customer_id, album_id, kind, cf_id, filename, mime, bytes, uploaded_at) VALUES (?,?,'image',?,?,?,?,?)"
-    ).bind(customer.id, albumId, cfId, file.name || "", file.type || "image/*", file.size, now).run();
-    return json({
-      ok: true, id: ins.meta.last_row_id, kind: "image",
-      link: (env.PUBLIC_BASE || "") + "/i/" + cfId,
-      thumb: "https://imagedelivery.net/" + env.IMAGES_HASH + "/" + cfId + "/public",
-    });
+    try {
+      const ins = await env.DB.prepare(
+        "INSERT INTO images (customer_id, album_id, kind, cf_id, filename, mime, bytes, uploaded_at) VALUES (?,?,'image',?,?,?,?,?)"
+      ).bind(customer.id, albumId, cfId, file.name || "", file.type || "image/*", file.size, now).run();
+      return json({
+        ok: true, id: ins.meta.last_row_id, kind: "image",
+        link: (env.PUBLIC_BASE || "") + "/i/" + cfId,
+        thumb: "https://imagedelivery.net/" + env.IMAGES_HASH + "/" + cfId + "/public",
+      });
+    } catch (e) {
+      // 写库失败：回滚已上传的 CF Images 对象，避免孤儿
+      try { await imagesApi(env, "/" + encodeURIComponent(cfId), { method: "DELETE" }); } catch (e2) { await recordPending(env, "image", cfId); }
+      console.log("image insert fail, rolled back: " + (e && e.message ? e.message : e));
+      return json({ error: "上传失败，请重试" }, 502);
+    }
   }
 
   // 非图片 → R2
@@ -280,7 +291,9 @@ async function handleUpload(request, env, customer) {
       link: await fileLink(env, ins.meta.last_row_id),
     });
   } catch (e) {
-    console.log("file upload fail: " + (e && e.message ? e.message : e));
+    // R2 已写但写库失败等：回滚 R2 对象，避免孤儿
+    try { await env.R2.delete(key); } catch (e2) { await recordPending(env, "r2", key); }
+    console.log("file upload fail, rolled back: " + (e && e.message ? e.message : e));
     return json({ error: "文件上传失败，请稍后重试" }, 502);
   }
 }
@@ -368,11 +381,16 @@ async function handleList(request, env, customer, url) {
   }));
   return json({ images });
 }
+// 删除失败时把待删对象登记到 pending_deletes，交给 scheduled 对账补删，避免存储孤儿静默泄漏
+async function recordPending(env, kind, ref) {
+  try { await env.DB.prepare("INSERT INTO pending_deletes (kind, ref, attempts, created_at) VALUES (?,?,0,?)").bind(kind, ref, Math.floor(Date.now() / 1000)).run(); }
+  catch (e) { console.log("recordPending fail(表可能未建): " + kind + " " + ref); }
+}
 async function handleDeleteImg(request, env, customer, id) {
   const row = await env.DB.prepare("SELECT * FROM images WHERE id=? AND customer_id=?").bind(id, customer.id).first();
   if (!row) return json({ error: "文件不存在" }, 404);
-  if (row.kind === "file" && row.r2_key) await env.R2.delete(row.r2_key);
-  else if (row.cf_id) await imagesApi(env, "/" + encodeURIComponent(row.cf_id), { method: "DELETE" });
+  if (row.kind === "file" && row.r2_key) { try { await env.R2.delete(row.r2_key); } catch (e) { await recordPending(env, "r2", row.r2_key); } }
+  else if (row.cf_id) { const r = await imagesApi(env, "/" + encodeURIComponent(row.cf_id), { method: "DELETE" }); if (!r.success) await recordPending(env, "image", row.cf_id); }
   await env.DB.prepare("DELETE FROM images WHERE id=?").bind(id).run();
   return json({ ok: true });
 }
@@ -532,8 +550,8 @@ async function handleAdminDelete(env, id) {
   for (const f of (files.results || [])) {
     try {
       if (f.kind === "file" && f.r2_key) await env.R2.delete(f.r2_key);
-      else if (f.cf_id) await imagesApi(env, "/" + encodeURIComponent(f.cf_id), { method: "DELETE" });
-    } catch (e) { /* 尽力删，不阻断 */ }
+      else if (f.cf_id) { const r = await imagesApi(env, "/" + encodeURIComponent(f.cf_id), { method: "DELETE" }); if (!r.success) await recordPending(env, "image", f.cf_id); }
+    } catch (e) { if (f.kind === "file" && f.r2_key) await recordPending(env, "r2", f.r2_key); }
   }
   await env.DB.prepare("DELETE FROM images WHERE customer_id=?").bind(id).run();
   await env.DB.prepare("DELETE FROM albums WHERE customer_id=?").bind(id).run();
@@ -574,6 +592,21 @@ function limiter(env, name) {
 
 /* ---------- 入口 ---------- */
 export default {
+  // 定时对账：补删之前删除失败留下的孤儿存储对象（DB 行已删、存储没删干净的）
+  async scheduled(event, env, ctx) {
+    try {
+      const rows = await env.DB.prepare("SELECT id, kind, ref, attempts FROM pending_deletes ORDER BY id LIMIT 50").all();
+      for (const r of (rows.results || [])) {
+        let done = false;
+        try {
+          if (r.kind === "r2") { await env.R2.delete(r.ref); done = true; }
+          else { const d = await imagesApi(env, "/" + encodeURIComponent(r.ref), { method: "DELETE" }); done = !!d.success; }
+        } catch (e) { done = false; }
+        if (done || r.attempts >= 10) await env.DB.prepare("DELETE FROM pending_deletes WHERE id=?").bind(r.id).run();
+        else await env.DB.prepare("UPDATE pending_deletes SET attempts=attempts+1 WHERE id=?").bind(r.id).run();
+      }
+    } catch (e) { console.log("scheduled cleanup fail(表可能未建): " + (e && e.message ? e.message : e)); }
+  },
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -594,14 +627,18 @@ export default {
       // 登录/开通：带暴破锁
       if (request.method === "POST" && path === "/api/login") {
         const ip = clientIp(request);
-        const lim = limiter(env, "login:" + ip);
-        if (lim) {
-          const c = await (await lim.fetch("https://do/check?max=" + envNumber(env, "AUTH_MAX_FAILURES", 8) + "&lock=" + envNumber(env, "AUTH_LOCK_SECONDS", 900))).json();
+        let card = "";
+        try { card = normCard((await request.clone().json()).card); } catch (e) { /* ignore */ }
+        const max = envNumber(env, "AUTH_MAX_FAILURES", 8), lock = envNumber(env, "AUTH_LOCK_SECONDS", 900);
+        // 双维度暴破锁：按 IP（挡代理池外的暴破）+ 按卡号（挡分布式 IP 撞单张卡）
+        const lims = [limiter(env, "login:" + ip), card ? limiter(env, "logincard:" + card) : null].filter(Boolean);
+        for (const lim of lims) {
+          const c = await (await lim.fetch("https://do/check?max=" + max + "&lock=" + lock)).json();
           if (c.locked) return json({ error: "尝试过于频繁，请 " + Math.ceil(c.retryIn / 60) + " 分钟后再试" }, 429);
         }
         const resp = await handleLogin(request, env);
-        if (lim) {
-          if (resp.status === 401 || resp.status === 400) await lim.fetch("https://do/fail?max=" + envNumber(env, "AUTH_MAX_FAILURES", 8) + "&lock=" + envNumber(env, "AUTH_LOCK_SECONDS", 900));
+        for (const lim of lims) {
+          if (resp.status === 401 || resp.status === 400) await lim.fetch("https://do/fail?max=" + max + "&lock=" + lock);
           else if (resp.status === 200) await lim.fetch("https://do/reset");
         }
         return resp;
@@ -898,7 +935,7 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 <div class="overlay" id="moveOverlay"><div class="modal"><h3 id="moveTitle">移动到相册</h3><div class="acts" id="moveActs"></div><div class="foot"><button id="moveCancel">取消</button></div></div></div>
 <div class="overlay" id="setOverlay"><div class="modal"><h3>账户设置</h3><div id="setBody"></div><div class="foot"><button id="setLogout" class="danger">退出登录</button><button id="setClose">关闭</button></div></div></div>
 <div class="toast" id="toast"></div>
-<script>
+<script nonce="__CSP_NONCE__">
 var TOKEN=sessionStorage.getItem("tuku_token")||"";
 var ALLFILES=[],ALBUMS=[],VIEW="dash";
 var NAV={type:"all"};
@@ -1409,7 +1446,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
   <div class="foot"><button id="confirmNo">取消</button><button class="pri danger" id="confirmYes">确认</button></div>
 </div></div>
 <div class="toast" id="toast"></div>
-<script>
+<script nonce="__CSP_NONCE__">
 var AK=sessionStorage.getItem("tuku_ak")||"",LIST=[],STATS=null,VIEW="dash",editId=null,_cf=null,Q="",FILT="all";
 function $(id){return document.getElementById(id)}
 function show(id){$(id).classList.add("show")}

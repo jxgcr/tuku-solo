@@ -9,6 +9,8 @@
 		{ "pattern": "tuku.5209696.xyz", "custom_domain": true }
 	],
 	"observability": { "enabled": true },
+	// 每 6 小时跑一次对账，补删删除失败留下的孤儿存储对象（scheduled 处理 pending_deletes 表）
+	"triggers": { "crons": ["17 */6 * * *"] },
 	"d1_databases": [
 		{ "binding": "DB", "database_name": "tuku-db", "database_id": "11a4016a-0596-4595-9bde-8afeb90a1912" }
 	],

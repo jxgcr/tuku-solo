@@ -38,6 +38,15 @@ CREATE TABLE IF NOT EXISTS images (
   uploaded_at INTEGER NOT NULL
 );
 
+-- 待清理队列：删除时存储对象删失败就登记这里，scheduled(每6h) 补删，防孤儿静默泄漏
+CREATE TABLE IF NOT EXISTS pending_deletes (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind       TEXT NOT NULL,     -- r2 | image
+  ref        TEXT NOT NULL,     -- r2 的 key 或 CF Images 的 cf_id
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_images_customer ON images(customer_id);
 CREATE INDEX IF NOT EXISTS idx_images_album ON images(album_id);
 CREATE INDEX IF NOT EXISTS idx_albums_customer ON albums(customer_id);
