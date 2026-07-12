@@ -6,3 +6,9 @@ node_modules/
 令牌*.txt
 secrets*.json
 .dev.vars
+wrangler.local.jsonc
+
+# 卖家专用工具(只留本机,不进公开仓库)
+代劳部署.cmd
+卖家操作说明.md
+wrangler.*.jsonc
