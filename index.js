@@ -408,7 +408,8 @@ export default {
     const path = url.pathname;
     request.__ctx = ctx;
     const secret = await secretOf(env);
-    const base = env.PUBLIC_BASE || url.origin; // 直链基址：配了 PUBLIC_BASE 用它，否则用本次请求 origin
+    // 直链基址：PUBLIC_BASE 配成 http(s) 网址才生效；留空/auto/乱填都回退到本次请求 origin
+    const base = /^https?:\/\//.test(env.PUBLIC_BASE || "") ? env.PUBLIC_BASE.replace(/\/+$/, "") : url.origin;
 
     if (path === "/health") return json({ ok: true, service: "cloud-solo", version: VERSION });
     if (path === "/" || path === "/index.html") return htmlResponse((await isInitialized(env)) ? PAGE_HTML : SETUP_HTML, env);

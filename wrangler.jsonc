@@ -22,8 +22,9 @@
 		{ "tag": "v1", "new_sqlite_classes": ["AuthLimiter"] }
 	],
 	"vars": {
-		// 对外访问地址：部署后填你自己的域名（或先用 *.workers.dev 默认地址）
-		"PUBLIC_BASE": "",
+		// 对外访问地址：保持 auto = 自动用部署网址(workers.dev 或你绑的域名)。
+		// 想固定成自己的域名再改成 https://你的域名。
+		"PUBLIC_BASE": "auto",
 		// 品牌：可改成你自己的名字和 LOGO 字（单个字/emoji）。留默认也行。
 		"BRAND_NAME": "我的云盘",
 		"BRAND_LOGO": "云",
