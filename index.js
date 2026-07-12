@@ -371,6 +371,14 @@ async function handleMoveImg(request, env, customer, id) {
   if (!r.meta.changes) return json({ error: "图片不存在" }, 404);
   return json({ ok: true });
 }
+async function handleRenameImg(request, env, customer, id) {
+  const body = await request.json().catch(() => ({}));
+  let name = String(body.filename || "").trim().replace(/[\r\n\t]/g, "").slice(0, 120);
+  if (!name) return json({ error: "名字不能为空" }, 400);
+  const r = await env.DB.prepare("UPDATE images SET filename=? WHERE id=? AND customer_id=?").bind(name, id, customer.id).run();
+  if (!r.meta.changes) return json({ error: "文件不存在" }, 404);
+  return json({ ok: true, filename: name });
+}
 async function handleMe(request, env, customer) {
   const count = await countImages(env, customer.id);
   const usedBytes = await usedBytesOf(env, customer.id);
@@ -583,6 +591,7 @@ export default {
       let m;
       if ((m = path.match(/^\/api\/img\/(\d+)$/)) && request.method === "DELETE") return handleDeleteImg(request, env, customer, Number(m[1]));
       if ((m = path.match(/^\/api\/img\/(\d+)\/album$/)) && request.method === "POST") return handleMoveImg(request, env, customer, Number(m[1]));
+      if ((m = path.match(/^\/api\/img\/(\d+)\/rename$/)) && request.method === "POST") return handleRenameImg(request, env, customer, Number(m[1]));
       if ((m = path.match(/^\/api\/albums\/(\d+)$/)) && request.method === "DELETE") return handleDeleteAlbum(request, env, customer, Number(m[1]));
 
       return json({ error: "not_found" }, 404);
@@ -599,7 +608,7 @@ const PAGE_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);min-height:100vh;line-height:1.5;-webkit-font-smoothing:antialiased}
 .bg{position:fixed;inset:0;z-index:-1;background:radial-gradient(900px 500px at 12% -5%,rgba(124,92,255,.20),transparent 60%),radial-gradient(800px 500px at 100% 110%,rgba(45,212,191,.12),transparent 55%)}
-input,button,select{font:inherit}
+input,button,select,textarea{font:inherit}
 input,select{width:100%;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.05);color:var(--ink);padding:12px 13px;outline:0}
 input:focus,select:focus{border-color:rgba(124,108,255,.55)}
 button{border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.06);color:var(--ink);font-weight:700;cursor:pointer;padding:11px 16px;transition:.15s}
@@ -609,7 +618,6 @@ button.pri:hover{filter:brightness(1.1)}
 button.sm{padding:6px 10px;font-size:.8rem}
 button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 .muted{color:var(--mut);font-size:.85rem}
-.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .hide{display:none!important}
 .logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--g2),var(--g1));display:flex;align-items:center;justify-content:center;font-weight:900;color:#fff;flex-shrink:0}
 .login{max-width:400px;margin:12vh auto;padding:20px}
@@ -617,20 +625,27 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 .login .card>*+*{margin-top:12px}
 .login .brand{display:flex;align-items:center;gap:10px;font-size:1.3rem;font-weight:800;margin-bottom:4px}
 .shell{display:flex;min-height:100vh}
-.side{width:236px;flex-shrink:0;background:var(--bg2);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:18px 14px;position:sticky;top:0;height:100vh}
-.side .brand{display:flex;align-items:center;gap:10px;font-size:1.2rem;font-weight:800;padding:6px 8px 18px}
-.navgrp{font-size:.7rem;color:var(--mut);letter-spacing:.08em;text-transform:uppercase;padding:14px 10px 6px}
-.navitem{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:10px;color:var(--mut);font-weight:600;cursor:pointer;text-decoration:none;font-size:.92rem;transition:.14s}
+.side{width:240px;flex-shrink:0;background:var(--bg2);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:16px 12px;position:sticky;top:0;height:100vh;overflow-y:auto}
+.side .brand{display:flex;align-items:center;gap:10px;font-size:1.2rem;font-weight:800;padding:6px 8px 14px}
+.side .brand .x{margin-left:auto;font-size:1.3rem;color:var(--mut);cursor:pointer;display:none}
+.navgrp{font-size:.68rem;color:var(--mut);letter-spacing:.08em;padding:12px 10px 5px}
+.navitem{display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px;color:var(--mut);font-weight:600;cursor:pointer;font-size:.9rem;transition:.14s}
 .navitem:hover{background:rgba(255,255,255,.05);color:var(--ink)}
 .navitem.on{background:linear-gradient(135deg,rgba(109,94,252,.22),rgba(168,85,247,.16));color:#fff;box-shadow:inset 0 0 0 1px rgba(124,108,255,.3)}
 .navitem .ni{font-size:1.05rem;width:20px;text-align:center}
-.sidefoot{margin-top:auto;padding-top:12px;border-top:1px solid var(--line)}
+.navitem .cnt{margin-left:auto;font-size:.75rem;color:var(--mut);font-variant-numeric:tabular-nums}
+.navitem.on .cnt{color:#c9beff}
+.sidefoot{margin-top:auto;padding-top:10px;border-top:1px solid var(--line)}
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:30;display:none}
+.scrim.show{display:block}
 .main{flex:1;min-width:0;display:flex;flex-direction:column}
-.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 26px;border-bottom:1px solid var(--line);background:rgba(10,12,18,.6);backdrop-filter:blur(8px);position:sticky;top:0;z-index:5}
+.topbar{display:flex;align-items:center;gap:12px;padding:14px 24px;border-bottom:1px solid var(--line);background:rgba(10,12,18,.6);backdrop-filter:blur(8px);position:sticky;top:0;z-index:6}
+.topbar .burger{font-size:1.4rem;cursor:pointer;display:none;line-height:1}
 .topbar .pt{font-size:1.15rem;font-weight:700}
+.topbar .sp{margin-left:auto}
 .uchip{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:.85rem;color:var(--mut)}
 .uchip .dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok)}
-.content{padding:26px;max-width:1080px;width:100%}
+.content{padding:24px;max-width:1120px;width:100%}
 .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}
 .scard{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px;display:flex;align-items:center;gap:15px;box-shadow:0 12px 40px rgba(0,0,0,.32)}
 .scard .ico{width:52px;height:52px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:1.5rem;flex-shrink:0}
@@ -640,7 +655,7 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 .scard .ico.i4{background:rgba(168,85,247,.16)}
 .scard .k{font-size:.8rem;color:var(--mut);margin-bottom:3px}
 .scard .v{font-size:1.5rem;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
-.panels{display:grid;grid-template-columns:1.3fr 1fr;gap:16px}
+.panels{display:grid;grid-template-columns:1.618fr 1fr;gap:16px}
 .panel{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px 22px;box-shadow:0 12px 40px rgba(0,0,0,.32)}
 .panel .ph{font-size:.95rem;font-weight:700;margin-bottom:16px}
 .usebar{height:10px;background:rgba(255,255,255,.08);border-radius:6px;overflow:hidden}
@@ -670,49 +685,80 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 .pitem.done .pbar>i{background:var(--ok);width:100%}
 .pitem.err .pbar>i{background:var(--bad)}
 .pitem.err .pct{color:var(--bad)}
-.bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px}
-.pill{border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:.82rem;background:rgba(255,255,255,.04);cursor:pointer}
-.pill.on{border-color:rgba(124,108,255,.55);background:rgba(124,108,255,.12)}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px}
-.tile{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;transition:transform .18s,border-color .18s}
-.tile:hover{border-color:rgba(124,108,255,.45);transform:translateY(-3px)}
-.tile img{width:100%;height:130px;object-fit:cover;display:block;background:#000;cursor:zoom-in;transition:transform .3s}
+.ftool{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+.ftitle{font-size:1.05rem;font-weight:700;margin-right:auto}
+.srch{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:10px;padding:0 12px;min-width:170px}
+.srch .si{color:var(--mut)}
+.srch input{border:0;background:transparent;padding:9px 0}
+.ftool select{width:auto;padding:9px 12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:14px}
+.tile{position:relative;aspect-ratio:1.618;border-radius:14px;overflow:hidden;background:#0a0b10;border:1px solid var(--line);cursor:pointer}
+.tile.sel{box-shadow:0 0 0 2px var(--g2);border-color:transparent}
+.tile img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .3s}
 .tile:hover img{transform:scale(1.05)}
-.filebox{height:130px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:8px;background:#0a0b10}
-.ficon{font-size:2.4rem;line-height:1}
-.fname{font-size:.72rem;color:var(--mut);text-align:center;word-break:break-all;max-height:2.3em;overflow:hidden}
-.tile .act{display:flex;gap:6px;padding:9px;flex-wrap:wrap}
-.dlbtn{text-decoration:none;text-align:center;line-height:1.9;display:inline-block}
-.overlay{position:fixed;inset:0;background:rgba(0,0,0,.62);display:none;align-items:center;justify-content:center;z-index:20;padding:16px}
+.tile .fileic{width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:2.6rem}
+.tile .cap{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.62);padding:6px 9px;font-size:.74rem;pointer-events:none}
+.tile .cap .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tile .cap .tm{color:#b9c0cc;font-size:.68rem}
+.tile .chk{position:absolute;top:8px;left:8px;width:21px;height:21px;border-radius:50%;border:1.5px solid rgba(255,255,255,.75);background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;font-size:.8rem;color:transparent;opacity:0;transition:.12s}
+.tile:hover .chk,.tile.sel .chk,.selmode .tile .chk{opacity:1}
+.tile.sel .chk{background:var(--g2);border-color:var(--g2);color:#fff}
+.tile .more{position:absolute;top:7px;right:7px;width:24px;height:24px;border-radius:8px;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;font-size:1rem;color:#fff;opacity:0;transition:.12s}
+.tile:hover .more{opacity:1}
+.tile .badge{position:absolute;bottom:26px;left:8px;padding:1px 7px;border-radius:6px;font-size:.62rem;font-weight:700}
+@media(hover:none){.tile .more{opacity:1}.tile .chk{opacity:1}}
+.batch{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(30px);opacity:0;pointer-events:none;display:flex;align-items:center;gap:8px;background:#12141d;border:1px solid rgba(124,108,255,.4);border-radius:999px;padding:8px 10px 8px 18px;box-shadow:0 18px 50px rgba(0,0,0,.55);z-index:25;transition:.18s;font-size:.86rem}
+.batch.show{opacity:1;transform:translateX(-50%) translateY(0);pointer-events:auto}
+.batch b{color:#c9beff}
+.batch .bd{width:1px;height:18px;background:rgba(255,255,255,.14);margin:0 3px}
+.batch button{border-radius:999px;padding:7px 13px}
+.empty{text-align:center;padding:56px 20px;color:var(--mut)}
+.empty .ei{font-size:2.6rem;opacity:.5;margin-bottom:10px}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.62);display:none;align-items:center;justify-content:center;z-index:35;padding:16px}
 .overlay.show{display:flex}
 .modal{background:#0d0f16;border:1px solid var(--line);border-radius:16px;padding:20px;width:100%;max-width:420px;box-shadow:0 30px 80px rgba(0,0,0,.6)}
-.cm h3{font-size:1rem;margin-bottom:12px;word-break:break-all}
-.cm .fmt{display:grid;gap:8px}
-.cm .fmt button{width:100%;justify-content:flex-start;text-align:left}
-.foot{display:flex;gap:10px;justify-content:flex-end;margin-top:14px}
+.modal h3{font-size:1.02rem;margin-bottom:14px;word-break:break-all}
+.acts{display:grid;gap:4px}
+.acts .a{display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:10px;cursor:pointer;font-size:.92rem;transition:.12s}
+.acts .a:hover{background:rgba(255,255,255,.06)}
+.acts .a .ai{width:20px;text-align:center;font-size:1.05rem}
+.acts .a.del{color:var(--bad)}
+.acts .sep{height:1px;background:var(--line);margin:5px 8px}
+.fmt{display:grid;gap:8px}
+.fmt button{width:100%;justify-content:flex-start;text-align:left}
+.foot{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
+.dprev{width:100%;height:180px;object-fit:contain;background:#000;border-radius:10px;margin-bottom:14px}
+.dico{height:120px;display:flex;align-items:center;justify-content:center;font-size:3rem;background:#0a0b10;border-radius:10px;margin-bottom:14px}
+.cval{display:flex;align-items:center;gap:8px;margin-top:8px}
+.cval input{font-size:.8rem;padding:9px 11px}
 .lb{position:fixed;inset:0;background:rgba(0,0,0,.92);display:none;align-items:center;justify-content:center;z-index:40}
 .lb.show{display:flex}
-.lb img{max-width:92vw;max-height:88vh;border-radius:8px;box-shadow:0 20px 80px rgba(0,0,0,.6)}
+.lb img{max-width:92vw;max-height:88vh;border-radius:8px}
 .lb .x{position:absolute;top:16px;right:22px;font-size:1.7rem;color:#fff;cursor:pointer;opacity:.85}
 .lb .nav{position:absolute;top:50%;transform:translateY(-50%);font-size:2.6rem;color:#fff;cursor:pointer;opacity:.7;padding:10px 18px;user-select:none}
 .lb .nav:hover{opacity:1}
 .lb .prev{left:6px}
 .lb .next{right:6px}
-.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);opacity:0;background:rgba(14,16,26,.95);border:1px solid var(--line);border-radius:12px;padding:12px 16px;transition:.2s;pointer-events:none;z-index:9}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);opacity:0;background:rgba(14,16,26,.95);border:1px solid var(--line);border-radius:12px;padding:12px 16px;transition:.2s;pointer-events:none;z-index:50}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 @media(max-width:820px){
 .cards{grid-template-columns:repeat(2,1fr)}
 .panels{grid-template-columns:1fr}
-.shell{flex-direction:column}
-.side{width:auto;height:auto;position:static;flex-direction:row;align-items:center;overflow-x:auto;padding:10px 12px;gap:6px}
-.side .brand{padding:6px 8px;font-size:1.05rem}
-.navgrp,.sidefoot{display:none}
-.side nav{display:flex;gap:6px}
-.navitem{padding:8px 12px;white-space:nowrap}
-.content{padding:18px}
-.topbar{padding:14px 18px}
+.side{position:fixed;left:0;top:0;height:100vh;z-index:31;transform:translateX(-100%);transition:transform .22s;box-shadow:0 0 60px rgba(0,0,0,.6)}
+.side.open{transform:translateX(0)}
+.side .brand .x{display:block}
+.topbar .burger{display:block}
+.content{padding:16px}
+.topbar{padding:12px 16px}
+.grid{grid-template-columns:repeat(2,1fr);gap:10px}
+.overlay{align-items:flex-end;padding:0}
+.overlay .modal{max-width:100%;border-radius:18px 18px 0 0}
+.batch{left:12px;right:12px;bottom:12px;transform:translateY(30px);justify-content:center;border-radius:14px}
+.batch.show{transform:translateY(0)}
+.ftitle{width:100%}
 }
 </style></head><body><div class="bg"></div>
+
 <div id="loginView" class="login"><div class="card">
   <div class="brand"><span class="logo">存</span>存链</div>
   <div class="muted">第一次用：输入卡号 + 给自己设个密码，即完成开通。以后凭卡号+密码登录。</div>
@@ -723,18 +769,14 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 </div></div>
 
 <div id="appShell" class="shell hide">
-  <aside class="side">
-    <div class="brand"><span class="logo">存</span>存链</div>
-    <nav>
-      <div class="navgrp">常规</div>
-      <a class="navitem on" data-view="dash"><span class="ni">📊</span>仪表盘</a>
-      <a class="navitem" data-view="upload"><span class="ni">☁️</span>上传文件</a>
-      <a class="navitem" data-view="files"><span class="ni">🗂️</span>我的文件</a>
-    </nav>
-    <div class="sidefoot"><a class="navitem" id="logoutBtn"><span class="ni">↩</span>退出登录</a></div>
+  <div class="scrim" id="scrim"></div>
+  <aside class="side" id="side">
+    <div class="brand"><span class="logo">存</span>存链<span class="x" id="sideClose">✕</span></div>
+    <div id="nav"></div>
+    <div class="sidefoot"><div class="navitem" id="logoutBtn"><span class="ni">↩</span>退出登录</div></div>
   </aside>
   <div class="main">
-    <header class="topbar"><div class="pt" id="pageTitle">仪表盘</div><div class="uchip"><span class="dot"></span><span id="who">—</span></div></header>
+    <header class="topbar"><span class="burger" id="burger">☰</span><div class="pt" id="pageTitle">仪表盘</div><span class="sp"></span><div class="uchip"><span class="dot"></span><span id="who">—</span></div></header>
     <div class="content">
 
       <div id="view-dash" class="view">
@@ -771,26 +813,58 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
       </div>
 
       <div id="view-files" class="view hide">
-        <div class="bar" id="albumBar"></div>
+        <div class="ftool">
+          <span class="ftitle" id="ftitle">全部文件</span>
+          <div class="srch"><span class="si">🔍</span><input id="q" placeholder="搜索文件名"></div>
+          <select id="sort"><option value="new">最新</option><option value="old">最早</option><option value="big">最大</option><option value="name">名称</option></select>
+          <button id="delAlbumBtn" class="sm danger hide">删除相册</button>
+        </div>
         <div class="grid" id="grid"></div>
-        <div id="empty" class="muted hide" style="text-align:center;padding:50px">这个相册还没有文件</div>
+        <div id="empty" class="empty hide"><div class="ei">📭</div>这里还没有文件</div>
       </div>
 
     </div>
   </div>
 </div>
+
+<div class="batch" id="batch">
+  <span>已选 <b id="selN">0</b> 张</span><span class="bd"></span>
+  <button id="bMove">📁 移动</button>
+  <button id="bDown">⬇ 下载</button>
+  <button id="bDel" class="danger">🗑 删除</button>
+  <button id="bCancel">取消</button>
+</div>
+
 <div class="lb" id="lightbox"><span class="x" id="lbClose">✕</span><span class="nav prev" id="lbPrev">‹</span><img id="lbImg" src="" alt=""><span class="nav next" id="lbNext">›</span></div>
-<div class="overlay" id="copyOverlay"><div class="modal cm"><h3 id="cmTitle">复制链接</h3><div class="fmt" id="cmFmt"></div><div class="foot"><button id="cmClose">关闭</button></div></div></div>
+
+<div class="overlay" id="menuOverlay"><div class="modal"><h3 id="mTitle">操作</h3><div class="acts" id="mActs"></div></div></div>
+<div class="overlay" id="copyOverlay"><div class="modal"><h3 id="cmTitle">复制链接</h3><div class="fmt" id="cmFmt"></div><div class="foot"><button id="cmClose">关闭</button></div></div></div>
+<div class="overlay" id="detailOverlay"><div class="modal"><h3>详细信息</h3><div id="dBody"></div><div class="foot"><button id="dClose">关闭</button></div></div></div>
+<div class="overlay" id="renameOverlay"><div class="modal"><h3>重命名</h3><input id="renameInput" placeholder="新文件名"><div class="foot"><button id="renCancel">取消</button><button class="pri" id="renSave">保存</button></div></div></div>
+<div class="overlay" id="moveOverlay"><div class="modal"><h3 id="moveTitle">移动到相册</h3><div class="acts" id="moveActs"></div><div class="foot"><button id="moveCancel">取消</button></div></div></div>
+<div class="overlay" id="setOverlay"><div class="modal"><h3>账户设置</h3><div id="setBody"></div><div class="foot"><button id="setLogout" class="danger">退出登录</button><button id="setClose">关闭</button></div></div></div>
 <div class="toast" id="toast"></div>
 <script>
 var TOKEN=sessionStorage.getItem("tuku_token")||"";
-var IMGS=[],LB=[],LBI=0;
-var CUR_ALBUM="all";
-var ALBUMS=[];
+var ALLFILES=[],ALBUMS=[],VIEW="dash";
+var NAV={type:"all"};
+var Q="",SORT="new";
+var SEL={};
+var LB=[],LBI=0;
+var MENU_IM=null,REN_IM=null,MOVE_IDS=[],ME=null;
+var CATS=[["all","全部文件","🗂️"],["image","图片","🖼️"],["video","视频","🎬"],["audio","音频","🎵"],["doc","文档","📄"],["zip","压缩包","🗜️"]];
 function $(id){return document.getElementById(id)}
+function show(id){$(id).classList.add("show")}
+function hide(id){$(id).classList.remove("show")}
 function toast(m){var t=$("toast");t.textContent=m;t.classList.add("show");setTimeout(function(){t.classList.remove("show")},2200)}
 function esc(s){return String(s==null?"":s).replace(/[<>&]/g,function(c){return c==="<"?"&lt;":c===">"?"&gt;":"&amp;"})}
-function fileIcon(im){var m=String(im.mime||"");if(m.indexOf("video")===0)return"🎬";if(m.indexOf("audio")===0)return"🎵";if(m.indexOf("pdf")>=0)return"📄";if(/zip|rar|7z|compress|tar/.test(m))return"🗜️";return"📎"}
+function fmtSize(b){b=Number(b)||0;if(b<1024)return b+" B";if(b<1048576)return (b/1024).toFixed(1)+" KB";if(b<1073741824)return (b/1048576).toFixed(1)+" MB";return (b/1073741824).toFixed(2)+" GB"}
+function relTime(t){t=Number(t);if(!t)return"";if(t>1e12)t=Math.floor(t/1000);var s=Math.floor(Date.now()/1000)-t;if(s<0)s=0;if(s<60)return"刚刚";if(s<3600)return Math.floor(s/60)+" 分钟前";if(s<86400)return Math.floor(s/3600)+" 小时前";if(s<2592000)return Math.floor(s/86400)+" 天前";var d=new Date(t*1000);return (d.getMonth()+1)+"-"+d.getDate()}
+function typeOf(im){if(im.kind==="image")return"image";var m=String(im.mime||"");if(m.indexOf("video")===0)return"video";if(m.indexOf("audio")===0)return"audio";if(m.indexOf("pdf")>=0||m.indexOf("text")===0||m.indexOf("word")>=0||m.indexOf("document")>=0||m.indexOf("sheet")>=0||m.indexOf("presentation")>=0)return"doc";if(/zip|rar|7z|compress|tar|gzip/.test(m))return"zip";return"other"}
+function typeIcon(t){return t==="video"?"🎬":t==="audio"?"🎵":t==="doc"?"📄":t==="zip"?"🗜️":"📎"}
+function extOf(im){var n=String(im.filename||"");var d=n.lastIndexOf(".");return d>0?n.slice(d+1).toUpperCase().slice(0,4):"文件"}
+function catCount(cat){if(cat==="all")return ALLFILES.length;var n=0;for(var i=0;i<ALLFILES.length;i++)if(typeOf(ALLFILES[i])===cat)n++;return n}
+function catLabel(t){for(var i=0;i<CATS.length;i++)if(CATS[i][0]===t)return CATS[i][1];return"全部文件"}
 function api(path,opts){opts=opts||{};opts.headers=Object.assign({authorization:"Bearer "+TOKEN},opts.headers||{});return fetch(path,opts).then(function(r){return r.json().then(function(d){if(r.status===401){logout();throw new Error(d.error||"未登录")}if(!r.ok)throw new Error(d.error||("HTTP "+r.status));return d})})}
 function logout(){sessionStorage.removeItem("tuku_token");TOKEN="";$("appShell").classList.add("hide");$("loginView").classList.remove("hide");$("who").textContent="—"}
 $("loginBtn").addEventListener("click",doLogin);
@@ -805,16 +879,10 @@ function doLogin(){
     enterApp();
   })}).catch(function(e){$("loginErr").textContent="网络错误"});
 }
-function enterApp(){$("loginView").classList.add("hide");$("appShell").classList.remove("hide");showView("dash")}
-function fmtSize(b){b=Number(b)||0;if(b<1024)return b+" B";if(b<1048576)return (b/1024).toFixed(1)+" KB";if(b<1073741824)return (b/1048576).toFixed(1)+" MB";return (b/1073741824).toFixed(2)+" GB"}
-function showView(v){
-  ["dash","upload","files"].forEach(function(n){var el=$("view-"+n);if(el)el.classList.toggle("hide",n!==v)});
-  var it=document.querySelectorAll(".navitem");for(var i=0;i<it.length;i++){var dv=it[i].getAttribute("data-view");if(dv)it[i].classList.toggle("on",dv===v)}
-  var T={dash:"仪表盘",upload:"上传文件",files:"我的文件"};$("pageTitle").textContent=T[v]||"";
-  if(v==="dash")loadMe();
-  if(v==="files")loadAlbums().then(loadImages);
-}
-function loadMe(){api("/api/me").then(function(d){
+function enterApp(){$("loginView").classList.add("hide");$("appShell").classList.remove("hide");Promise.all([loadAlbums(),loadFiles()]).then(function(){navTo({view:"dash"})}).catch(function(){navTo({view:"dash"})})}
+function loadFiles(){return api("/api/list").then(function(d){ALLFILES=d.images||[]})}
+function loadAlbums(){return api("/api/albums").then(function(d){ALBUMS=d.albums||[]})}
+function loadMe(){api("/api/me").then(function(d){ME=d;
   $("who").textContent=d.tierLabel;
   $("sCount").textContent=d.count;
   $("sUsed").textContent=fmtSize(d.usedBytes);
@@ -828,45 +896,138 @@ function loadMe(){api("/api/me").then(function(d){
   $("dUseTxt").textContent=fmtSize(d.usedBytes)+" / "+fmtSize(d.byteLimit);
   $("dPct").textContent=pct.toFixed(pct<10?1:0)+"%";
 }).catch(function(){})}
-function loadAlbums(){return api("/api/albums").then(function(d){ALBUMS=d.albums||[];renderAlbumBar()})}
-function renderAlbumBar(){
-  var bar=$("albumBar");bar.innerHTML="";
-  var mk=function(key,label){var p=document.createElement("span");p.className="pill"+(CUR_ALBUM==key?" on":"");p.textContent=label;p.onclick=function(){CUR_ALBUM=key;renderAlbumBar();loadImages()};return p};
-  bar.appendChild(mk("all","全部"));
-  bar.appendChild(mk("none","未分组"));
-  ALBUMS.forEach(function(a){var p=mk(String(a.id),a.name+"("+a.count+")");bar.appendChild(p)});
-  var add=document.createElement("button");add.className="sm";add.textContent="+ 新建相册";add.onclick=newAlbum;bar.appendChild(add);
-  if(CUR_ALBUM!=="all"&&CUR_ALBUM!=="none"){var del=document.createElement("button");del.className="sm danger";del.textContent="删除本相册";del.onclick=function(){delAlbum(CUR_ALBUM)};bar.appendChild(del)}
+function navTo(spec){
+  clearSel();closeDrawer();closeOverlays();
+  if(spec.view){VIEW=spec.view}
+  else if(spec.type){VIEW="files";NAV={type:spec.type}}
+  else{VIEW="files";NAV={album:spec.album,name:spec.name}}
+  $("view-dash").classList.toggle("hide",VIEW!=="dash");
+  $("view-upload").classList.toggle("hide",VIEW!=="upload");
+  $("view-files").classList.toggle("hide",VIEW!=="files");
+  $("pageTitle").textContent=VIEW==="dash"?"仪表盘":VIEW==="upload"?"上传文件":"我的文件";
+  renderNav();
+  if(VIEW==="dash")loadMe();
+  if(VIEW==="files")renderFiles();
 }
-function newAlbum(){var name=prompt("相册名字");if(!name)return;api("/api/albums",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name:name})}).then(function(){loadAlbums()}).catch(function(e){toast(e.message,true)})}
-function delAlbum(id){if(!confirm("删除相册？里面的图会变成未分组，不会删图。"))return;api("/api/albums/"+id,{method:"DELETE"}).then(function(){CUR_ALBUM="all";loadAlbums().then(loadImages)}).catch(function(e){toast(e.message)})}
-function loadImages(){
-  var q=CUR_ALBUM==="all"?"":(CUR_ALBUM==="none"?"?album_id=none":"?album_id="+CUR_ALBUM);
-  api("/api/list"+q).then(function(d){
-    IMGS=d.images;var g=$("grid");g.innerHTML="";
-    if(!d.images.length){$("empty").classList.remove("hide")}else{$("empty").classList.add("hide")}
-    d.images.forEach(function(im){
-      var t=document.createElement("div");t.className="tile";
-      if(im.kind==="image"){var img=document.createElement("img");img.src=im.thumb;img.loading="lazy";img.onclick=function(){openLightbox(im)};t.appendChild(img);}
-      else{var fb=document.createElement("div");fb.className="filebox";fb.innerHTML="<div class='ficon'>"+fileIcon(im)+"</div><div class='fname'>"+esc(im.filename||"文件")+"</div>";t.appendChild(fb);}
-      var act=document.createElement("div");act.className="act";
-      var copy=document.createElement("button");copy.className="sm";copy.textContent="复制链接";copy.onclick=function(){openCopyMenu(im)};
-      act.appendChild(copy);
-      if(im.kind==="file"){var dl=document.createElement("a");dl.className="sm dlbtn";dl.textContent="下载";dl.href=im.link+"?dl=1";act.appendChild(dl);}
-      var mv=document.createElement("button");mv.className="sm";mv.textContent="移动";mv.onclick=function(){moveImg(im.id)};act.appendChild(mv);
-      var del=document.createElement("button");del.className="sm danger";del.textContent="删除";del.onclick=function(){delImg(im.id)};act.appendChild(del);
-      t.appendChild(act);g.appendChild(t);
-    });
-  }).catch(function(e){toast(e.message)});
+function renderNav(){
+  var nav=$("nav");nav.innerHTML="";
+  var grp=function(t){var g=document.createElement("div");g.className="navgrp";g.textContent=t;nav.appendChild(g)};
+  var item=function(icon,label,active,cnt,fn){var a=document.createElement("div");a.className="navitem"+(active?" on":"");a.innerHTML="<span class='ni'>"+icon+"</span>"+esc(label);if(cnt!=null){var c=document.createElement("span");c.className="cnt";c.textContent=cnt;a.appendChild(c)}a.onclick=fn;nav.appendChild(a)};
+  grp("常规");
+  item("📊","仪表盘",VIEW==="dash",null,function(){navTo({view:"dash"})});
+  item("☁️","上传文件",VIEW==="upload",null,function(){navTo({view:"upload"})});
+  grp("分类");
+  CATS.forEach(function(c){item(c[2],c[1],VIEW==="files"&&NAV.type===c[0],catCount(c[0]),function(){navTo({type:c[0]})})});
+  grp("相册");
+  ALBUMS.forEach(function(al){item("📁",al.name,VIEW==="files"&&String(NAV.album)===String(al.id),al.count,function(){navTo({album:al.id,name:al.name})})});
+  item("➕","新建相册",false,null,newAlbum);
+  grp("账户");
+  item("⚙️","设置",false,null,openSettings);
 }
-function delImg(id){if(!confirm("删除这张图？不可恢复。"))return;api("/api/img/"+id,{method:"DELETE"}).then(function(){toast("已删除");loadAlbums().then(loadImages)}).catch(function(e){toast(e.message)})}
-function moveImg(id){
-  var names=["未分组"].concat(ALBUMS.map(function(a){return a.name}));
-  var pick=prompt("移到哪个相册？输入序号：\\n0=未分组"+ALBUMS.map(function(a,i){return "\\n"+(i+1)+"="+a.name}).join(""));
-  if(pick===null)return;var idx=Number(pick);
-  var albumId=idx===0?null:(ALBUMS[idx-1]?ALBUMS[idx-1].id:undefined);
-  if(albumId===undefined)return toast("序号不对");
-  api("/api/img/"+id+"/album",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({album_id:albumId})}).then(function(){toast("已移动");loadAlbums().then(loadImages)}).catch(function(e){toast(e.message)});
+function currentList(){
+  var arr=ALLFILES.slice();
+  if(NAV.album!=null&&NAV.type==null){arr=arr.filter(function(x){return String(x.album_id)===String(NAV.album)})}
+  else if(NAV.type&&NAV.type!=="all"){arr=arr.filter(function(x){return typeOf(x)===NAV.type})}
+  if(Q){var q=Q.toLowerCase();arr=arr.filter(function(x){return String(x.filename||"").toLowerCase().indexOf(q)>=0})}
+  arr.sort(function(a,b){
+    if(SORT==="new")return (b.uploaded_at||0)-(a.uploaded_at||0);
+    if(SORT==="old")return (a.uploaded_at||0)-(b.uploaded_at||0);
+    if(SORT==="big")return (b.bytes||0)-(a.bytes||0);
+    return String(a.filename||"").localeCompare(String(b.filename||""));
+  });
+  return arr;
+}
+function renderFiles(){
+  var isAlbum=NAV.album!=null&&NAV.type==null;
+  $("ftitle").textContent=isAlbum?(NAV.name||"相册"):catLabel(NAV.type);
+  $("delAlbumBtn").classList.toggle("hide",!isAlbum);
+  var arr=currentList();
+  var g=$("grid");g.innerHTML="";
+  $("empty").classList.toggle("hide",arr.length>0);
+  arr.forEach(function(im){
+    var t=document.createElement("div");t.className="tile"+(SEL[im.id]?" sel":"");t.setAttribute("data-id",im.id);
+    if(im.kind==="image"){var img=document.createElement("img");img.src=im.thumb;img.loading="lazy";t.appendChild(img)}
+    else{var fi=document.createElement("div");fi.className="fileic";fi.textContent=typeIcon(typeOf(im));t.appendChild(fi);var bd=document.createElement("span");bd.className="badge";var ty=typeOf(im);bd.textContent=extOf(im);bd.style.background=ty==="video"?"rgba(45,212,191,.22)":ty==="audio"?"rgba(168,85,247,.22)":ty==="zip"?"rgba(243,180,76,.22)":"rgba(124,108,255,.22)";bd.style.color="#EEF1F7";t.appendChild(bd)}
+    var chk=document.createElement("span");chk.className="chk";chk.textContent="✓";chk.onclick=function(e){e.stopPropagation();toggleSel(im.id)};t.appendChild(chk);
+    var more=document.createElement("span");more.className="more";more.textContent="⋯";more.onclick=function(e){e.stopPropagation();openMenu(im)};t.appendChild(more);
+    var cap=document.createElement("div");cap.className="cap";cap.innerHTML="<div class='nm'>"+esc(im.filename||"文件")+"</div><div class='tm'>"+relTime(im.uploaded_at)+"</div>";t.appendChild(cap);
+    t.onclick=function(){if(im.kind==="image")openLightbox(im);else window.open(im.link,"_blank")};
+    g.appendChild(t);
+  });
+}
+function toggleSel(id){if(SEL[id])delete SEL[id];else SEL[id]=true;updateSelUI()}
+function selIds(){return Object.keys(SEL).map(Number)}
+function clearSel(){SEL={};updateSelUI()}
+function updateSelUI(){
+  var n=selIds().length;
+  document.body.classList.toggle("selmode",n>0);
+  $("selN").textContent=n;
+  $("batch").classList.toggle("show",n>0);
+  var tiles=document.querySelectorAll("#grid .tile");
+  for(var i=0;i<tiles.length;i++){var id=tiles[i].getAttribute("data-id");tiles[i].classList.toggle("sel",!!SEL[id])}
+}
+function openMenu(im){MENU_IM=im;$("mTitle").textContent=im.filename||"操作";var box=$("mActs");box.innerHTML="";
+  var add=function(icon,label,fn,cls){var a=document.createElement("div");a.className="a"+(cls?" "+cls:"");a.innerHTML="<span class='ai'>"+icon+"</span>"+label;a.onclick=fn;box.appendChild(a)};
+  add("🔗","复制链接",function(){hide("menuOverlay");openCopyMenu(im)});
+  add("⬇","下载",function(){hide("menuOverlay");downloadOne(im)});
+  add("↗","新窗口打开",function(){hide("menuOverlay");window.open(im.link,"_blank")});
+  add("✏","重命名",function(){hide("menuOverlay");openRename(im)});
+  add("ℹ","详细信息",function(){hide("menuOverlay");openDetail(im)});
+  add("📁","移动到相册",function(){hide("menuOverlay");openMove([im.id])});
+  var sep=document.createElement("div");sep.className="sep";box.appendChild(sep);
+  add("🗑","删除",function(){hide("menuOverlay");delImgs([im.id])},"del");
+  show("menuOverlay");
+}
+function openCopyMenu(im){
+  var link=im.link,name=im.filename||"file",isImg=im.kind==="image";
+  var fmts=[["直链",link]];
+  if(isImg){fmts.push(["Markdown","!["+name+"]("+link+")"]);fmts.push(["Markdown 带链接","[!["+name+"]("+link+")]("+link+")"]);fmts.push(["HTML","<img src='"+link+"' alt='"+name+"'>"]);fmts.push(["BBCode","[img]"+link+"[/img]"]);fmts.push(["缩略图直链",im.thumb]);}
+  else{fmts.push(["Markdown","["+name+"]("+link+")"]);fmts.push(["HTML","<a href='"+link+"'>"+name+"</a>"]);fmts.push(["BBCode","[url]"+link+"[/url]"]);}
+  var box=$("cmFmt");box.innerHTML="";
+  fmts.forEach(function(f){var b=document.createElement("button");b.className="sm";b.textContent=f[0];b.onclick=function(){navigator.clipboard.writeText(f[1]).then(function(){toast(f[0]+" 已复制")});hide("copyOverlay")};box.appendChild(b)});
+  $("cmTitle").textContent="复制 · "+name;show("copyOverlay");
+}
+function downloadOne(im){var a=document.createElement("a");a.href=im.kind==="image"?im.link:(im.link+"?dl=1");a.download=im.filename||"";document.body.appendChild(a);a.click();a.remove()}
+function downloadSel(){var arr=ALLFILES.filter(function(x){return SEL[x.id]});var i=0;(function nx(){if(i>=arr.length)return;downloadOne(arr[i]);i++;setTimeout(nx,500)})();toast("开始下载 "+arr.length+" 个")}
+function openDetail(im){
+  var b=$("dBody");b.innerHTML="";
+  if(im.kind==="image"){var img=document.createElement("img");img.className="dprev";img.src=im.thumb;b.appendChild(img)}
+  else{var ic=document.createElement("div");ic.className="dico";ic.textContent=typeIcon(typeOf(im));b.appendChild(ic)}
+  var row=function(k,v){var d=document.createElement("div");d.className="info";d.innerHTML="<span class='il'>"+k+"</span><span>"+esc(v)+"</span>";b.appendChild(d);return d};
+  row("文件名",im.filename||"—");
+  row("类型",im.mime||(im.kind==="image"?"图片":"文件"));
+  row("大小",fmtSize(im.bytes));
+  var dim=row("尺寸",im.kind==="image"?"读取中…":"—");
+  row("上传时间",relTime(im.uploaded_at));
+  var lk=document.createElement("div");lk.className="cval";var inp=document.createElement("input");inp.readOnly=true;inp.value=im.link;var cp=document.createElement("button");cp.className="sm";cp.textContent="复制直链";cp.onclick=function(){navigator.clipboard.writeText(im.link).then(function(){toast("直链已复制")})};lk.appendChild(inp);lk.appendChild(cp);b.appendChild(lk);
+  if(im.kind==="image"){var pi=new Image();pi.onload=function(){dim.querySelector("span:last-child").textContent=pi.naturalWidth+" × "+pi.naturalHeight};pi.src=im.link}
+  show("detailOverlay");
+}
+function openRename(im){REN_IM=im;$("renameInput").value=im.filename||"";show("renameOverlay");setTimeout(function(){$("renameInput").focus()},50)}
+function doRename(){if(!REN_IM)return;var nm=$("renameInput").value.trim();if(!nm)return toast("名字不能为空");api("/api/img/"+REN_IM.id+"/rename",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({filename:nm})}).then(function(r){REN_IM.filename=r.filename||nm;hide("renameOverlay");renderFiles();toast("已重命名")}).catch(function(e){toast(e.message)})}
+function openMove(ids){MOVE_IDS=ids;var box=$("moveActs");box.innerHTML="";
+  var add=function(label,albumId){var a=document.createElement("div");a.className="a";a.innerHTML="<span class='ai'>📁</span>"+esc(label);a.onclick=function(){doMove(ids,albumId)};box.appendChild(a)};
+  add("未分组",null);
+  ALBUMS.forEach(function(al){add(al.name+"（"+al.count+"）",al.id)});
+  var sep=document.createElement("div");sep.className="sep";box.appendChild(sep);
+  var na=document.createElement("div");na.className="a";na.innerHTML="<span class='ai'>➕</span>新建相册并移入";na.onclick=function(){var name=prompt("相册名字");if(!name)return;api("/api/albums",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name:name})}).then(function(res){return loadAlbums().then(function(){var na2=ALBUMS.filter(function(a){return a.name===name});doMove(ids,na2.length?na2[na2.length-1].id:null)})}).catch(function(e){toast(e.message)})};box.appendChild(na);
+  $("moveTitle").textContent="移动 "+ids.length+" 个到相册";show("moveOverlay");
+}
+function doMove(ids,albumId){
+  var i=0;(function nx(){if(i>=ids.length){hide("moveOverlay");clearSel();reloadFiles();toast("已移动");return}api("/api/img/"+ids[i]+"/album",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({album_id:albumId})}).then(function(){i++;nx()}).catch(function(e){toast(e.message);i++;nx()})})();
+}
+function delImgs(ids){
+  if(!ids.length)return;
+  if(!confirm("删除选中的 "+ids.length+" 个文件？不可恢复。"))return;
+  var i=0;(function nx(){if(i>=ids.length){clearSel();reloadFiles();toast("已删除");return}api("/api/img/"+ids[i],{method:"DELETE"}).then(function(){i++;nx()}).catch(function(e){toast(e.message);i++;nx()})})();
+}
+function reloadFiles(){return Promise.all([loadFiles(),loadAlbums()]).then(function(){renderNav();renderFiles();loadMe()})}
+function newAlbum(){var name=prompt("相册名字");if(!name)return;api("/api/albums",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name:name})}).then(function(){return loadAlbums()}).then(function(){renderNav();toast("已新建相册")}).catch(function(e){toast(e.message)})}
+function delAlbum(id){if(!confirm("删除相册？里面的文件会变成未分组，不会删文件。"))return;api("/api/albums/"+id,{method:"DELETE"}).then(function(){return loadAlbums()}).then(function(){navTo({type:"all"})}).catch(function(e){toast(e.message)})}
+function openSettings(){var b=$("setBody");b.innerHTML="";closeDrawer();
+  var row=function(k,v){var d=document.createElement("div");d.className="info";d.innerHTML="<span class='il'>"+k+"</span><span>"+esc(v)+"</span>";b.appendChild(d)};
+  if(ME){row("档位",ME.tierLabel);row("卡号",ME.card);row("到期",ME.expiresAt?ME.expiresAt.slice(0,10):"永久");row("已用",fmtSize(ME.usedBytes)+" / "+fmtSize(ME.byteLimit))}
+  show("setOverlay");
 }
 var drop=$("drop"),fileInput=$("file");
 drop.addEventListener("click",function(){fileInput.click()});
@@ -874,7 +1035,6 @@ fileInput.addEventListener("change",function(){uploadFiles(fileInput.files);file
 drop.addEventListener("dragover",function(e){e.preventDefault();drop.classList.add("on")});
 drop.addEventListener("dragleave",function(){drop.classList.remove("on")});
 drop.addEventListener("drop",function(e){e.preventDefault();drop.classList.remove("on");uploadFiles(e.dataTransfer.files)});
-// 客户端压缩图片（canvas 缩放 + 可选水印）。非图片/GIF 原样返回。
 function compressImage(file,maxDim,quality,wm){
   return new Promise(function(resolve){
     if(String(file.type).indexOf("image/")!==0||file.type==="image/gif"){resolve(file);return}
@@ -888,14 +1048,14 @@ function compressImage(file,maxDim,quality,wm){
       if(wm){var fs=Math.max(14,Math.round(cw/26));ctx.font=fs+"px sans-serif";ctx.textAlign="right";ctx.textBaseline="bottom";ctx.lineWidth=Math.max(2,fs/8);ctx.strokeStyle="rgba(0,0,0,.45)";ctx.fillStyle="rgba(255,255,255,.82)";ctx.strokeText(wm,cw-12,ch-10);ctx.fillText(wm,cw-12,ch-10)}
       cv.toBlob(function(b){
         if(!b||(b.size>=file.size&&!wm)){resolve(file);return}
-        resolve(new File([b],file.name.replace(/\.(png|webp|bmp|jpeg)$/i,".jpg"),{type:"image/jpeg"}));
+        var nm=file.name,dot=nm.lastIndexOf(".");nm=(dot>0?nm.slice(0,dot):nm)+".jpg";
+        resolve(new File([b],nm,{type:"image/jpeg"}));
       },"image/jpeg",quality);
     };
     img.onerror=function(){URL.revokeObjectURL(url);resolve(file)};
     img.src=url;
   });
 }
-// 带进度的上传（XHR）
 function xhrUpload(file,albumId,onprog){
   return new Promise(function(resolve,reject){
     var fd=new FormData();fd.append("file",file);if(albumId)fd.append("album_id",albumId);
@@ -906,7 +1066,6 @@ function xhrUpload(file,albumId,onprog){
     x.send(fd);
   });
 }
-// 大文件分片上传（>90MB 走这里，绕过 100MB 限制）
 function multipartUpload(file,albumId,onprog){
   var CHUNK=40*1024*1024;
   var key,uploadId,parts=[];
@@ -931,12 +1090,13 @@ function multipartUpload(file,albumId,onprog){
 }
 function uploadFiles(files){
   files=Array.prototype.slice.call(files||[]);if(!files.length)return;
+  navTo({view:"upload"});
   var pc=$("progress");pc.classList.remove("hide");pc.innerHTML="";
   var doCompress=$("cmp").checked,wm=$("wm").value.trim();
-  var albumId=(CUR_ALBUM!=="all"&&CUR_ALBUM!=="none")?CUR_ALBUM:null;
+  var albumId=(NAV.album!=null&&NAV.type==null)?NAV.album:null;
   var done=0,fail=0;
   var runOne=function(i){
-    if(i>=files.length){toast("完成 "+done+" 个"+(fail?("，失败 "+fail):""));loadMe();loadAlbums().then(loadImages);setTimeout(function(){if(!fail)pc.classList.add("hide")},1600);return}
+    if(i>=files.length){toast("完成 "+done+" 个"+(fail?("，失败 "+fail):""));reloadFiles();setTimeout(function(){if(!fail)pc.classList.add("hide")},1600);return}
     var f=files[i];
     var item=document.createElement("div");item.className="pitem";
     item.innerHTML="<div class='pn'><span>"+esc(f.name)+"</span><span class='pct'>0%</span></div><div class='pbar'><i></i></div>";
@@ -949,32 +1109,50 @@ function uploadFiles(files){
   };
   toast("上传中…");runOne(0);
 }
-function openLightbox(im){LB=IMGS.filter(function(x){return x.kind==="image"});LBI=0;for(var k=0;k<LB.length;k++){if(LB[k].id===im.id){LBI=k;break}}if(!LB.length)return;$("lbImg").src=LB[LBI].thumb;$("lightbox").classList.add("show")}
-function lbNav(d){if(!LB.length)return;LBI=(LBI+d+LB.length)%LB.length;$("lbImg").src=LB[LBI].thumb}
-$("lbClose").onclick=function(){$("lightbox").classList.remove("show")};
+function openLightbox(im){var imgs=currentList().filter(function(x){return x.kind==="image"});LB=imgs;LBI=0;for(var k=0;k<LB.length;k++){if(LB[k].id===im.id){LBI=k;break}}if(!LB.length)return;$("lbImg").src=LB[LBI].link;show("lightbox")}
+function lbNav(d){if(!LB.length)return;LBI=(LBI+d+LB.length)%LB.length;$("lbImg").src=LB[LBI].link}
+$("lbClose").onclick=function(){hide("lightbox")};
 $("lbPrev").onclick=function(){lbNav(-1)};
 $("lbNext").onclick=function(){lbNav(1)};
-$("lightbox").addEventListener("click",function(e){if(e.target.id==="lightbox")$("lightbox").classList.remove("show")});
-document.addEventListener("keydown",function(e){if(!$("lightbox").classList.contains("show"))return;if(e.key==="Escape")$("lightbox").classList.remove("show");else if(e.key==="ArrowLeft")lbNav(-1);else if(e.key==="ArrowRight")lbNav(1)});
-$("cmClose").onclick=function(){$("copyOverlay").classList.remove("show")};
-function openCopyMenu(im){
-  var link=im.link,name=im.filename||"file",isImg=im.kind==="image";
-  var fmts=[["直链",link]];
-  if(isImg){fmts.push(["Markdown","!["+name+"]("+link+")"]);fmts.push(["Markdown 带链接","[!["+name+"]("+link+")]("+link+")"]);fmts.push(["HTML","<img src='"+link+"' alt='"+name+"'>"]);fmts.push(["BBCode","[img]"+link+"[/img]"]);fmts.push(["缩略图直链",im.thumb]);}
-  else{fmts.push(["Markdown","["+name+"]("+link+")"]);fmts.push(["HTML","<a href='"+link+"'>"+name+"</a>"]);fmts.push(["BBCode","[url]"+link+"[/url]"]);}
-  var box=$("cmFmt");box.innerHTML="";
-  fmts.forEach(function(f){var b=document.createElement("button");b.className="sm";b.textContent=f[0];b.onclick=function(){navigator.clipboard.writeText(f[1]).then(function(){toast(f[0]+" 已复制")});$("copyOverlay").classList.remove("show")};box.appendChild(b)});
-  $("cmTitle").textContent="复制 · "+name;$("copyOverlay").classList.add("show");
-}
-var navItems=document.querySelectorAll(".navitem[data-view]");
-for(var ni=0;ni<navItems.length;ni++){navItems[ni].addEventListener("click",function(){showView(this.getAttribute("data-view"))})}
-$("goUpload").addEventListener("click",function(){showView("upload")});
+$("lightbox").addEventListener("click",function(e){if(e.target.id==="lightbox")hide("lightbox")});
+function closeOverlays(){var ov=document.querySelectorAll(".overlay");for(var i=0;i<ov.length;i++)ov[i].classList.remove("show")}
+["menuOverlay","copyOverlay","detailOverlay","renameOverlay","moveOverlay","setOverlay"].forEach(function(id){$(id).addEventListener("click",function(e){if(e.target===this)this.classList.remove("show")})});
+$("cmClose").onclick=function(){hide("copyOverlay")};
+$("dClose").onclick=function(){hide("detailOverlay")};
+$("renCancel").onclick=function(){hide("renameOverlay")};
+$("renSave").onclick=doRename;
+$("renameInput").addEventListener("keydown",function(e){if(e.key==="Enter")doRename()});
+$("moveCancel").onclick=function(){hide("moveOverlay")};
+$("setClose").onclick=function(){hide("setOverlay")};
+$("setLogout").onclick=function(){hide("setOverlay");logout()};
+$("goUpload").addEventListener("click",function(){navTo({view:"upload"})});
 $("logoutBtn").addEventListener("click",logout);
+$("delAlbumBtn").addEventListener("click",function(){if(NAV.album!=null)delAlbum(NAV.album)});
+$("q").addEventListener("input",function(){Q=this.value;renderFiles()});
+$("sort").addEventListener("change",function(){SORT=this.value;renderFiles()});
+$("bMove").onclick=function(){openMove(selIds())};
+$("bDown").onclick=downloadSel;
+$("bDel").onclick=function(){delImgs(selIds())};
+$("bCancel").onclick=clearSel;
+$("burger").addEventListener("click",openDrawer);
+$("sideClose").addEventListener("click",closeDrawer);
+$("scrim").addEventListener("click",closeDrawer);
+function openDrawer(){$("side").classList.add("open");$("scrim").classList.add("show")}
+function closeDrawer(){$("side").classList.remove("open");$("scrim").classList.remove("show")}
+document.addEventListener("keydown",function(e){
+  if($("lightbox").classList.contains("show")){if(e.key==="Escape")hide("lightbox");else if(e.key==="ArrowLeft")lbNav(-1);else if(e.key==="ArrowRight")lbNav(1);return}
+  if($("appShell").classList.contains("hide"))return;
+  var inField=/INPUT|TEXTAREA|SELECT/.test((document.activeElement||{}).tagName||"");
+  if(e.key==="Escape"){clearSel();closeOverlays();closeDrawer();return}
+  if(VIEW!=="files"||inField)return;
+  if(e.key==="Delete"&&selIds().length){delImgs(selIds())}
+  else if((e.ctrlKey||e.metaKey)&&(e.key==="a"||e.key==="A")){e.preventDefault();currentList().forEach(function(x){SEL[x.id]=true});updateSelUI()}
+});
 document.addEventListener("paste",function(e){
   if($("appShell").classList.contains("hide"))return;
   var items=(e.clipboardData||{}).items||[],fs=[];
   for(var i=0;i<items.length;i++){if(items[i].kind==="file"){var f=items[i].getAsFile();if(f)fs.push(f)}}
-  if(fs.length){showView("upload");uploadFiles(fs)}
+  if(fs.length)uploadFiles(fs);
 });
 if(TOKEN)enterApp();
 </script></body></html>`;
