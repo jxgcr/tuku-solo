@@ -1,22 +1,19 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "tuku",
+	"name": "my-cloud",
 	"main": "index.js",
 	"compatibility_date": "2026-07-05",
-	// 图床 SaaS：算力在 Hannah，存储用 Hannah 的 CF Images，对外走 tu.aistela.com（aistela-front 反代到本域）
-	"account_id": "2e7307f9e8cd602d0396fc1f4ef532c9",
-	"routes": [
-		{ "pattern": "tuku.5209696.xyz", "custom_domain": true }
-	],
+	// 存链-私有版（solo）：部署到「你自己」的 Cloudflare 账号。数据全在你账号里，只归你。
+	// 纯 R2 存储（图片也存 R2），不用 CF Images、不用畅密、无多租户、无运营台。
+	// 「Deploy to Cloudflare」按钮会自动创建下面的 D1 / R2 / DO 并回填 id；本地部署则先手动建。
 	"observability": { "enabled": true },
-	// 每 6 小时跑一次对账，补删删除失败留下的孤儿存储对象（scheduled 处理 pending_deletes 表）
+	// 每 6 小时对账，补删删除失败留下的孤儿存储对象
 	"triggers": { "crons": ["17 */6 * * *"] },
 	"d1_databases": [
-		{ "binding": "DB", "database_name": "tuku-db", "database_id": "11a4016a-0596-4595-9bde-8afeb90a1912" }
+		{ "binding": "DB", "database_name": "cloud-db", "database_id": "" }
 	],
-	// 文件床：非图片文件（视频/音频/PDF/压缩包/任意）存 R2；图片仍走 CF Images
 	"r2_buckets": [
-		{ "binding": "R2", "bucket_name": "tuku-files" }
+		{ "binding": "R2", "bucket_name": "cloud-files" }
 	],
 	"durable_objects": {
 		"bindings": [{ "name": "AUTH_LIMITER", "class_name": "AuthLimiter" }]
@@ -25,37 +22,18 @@
 		{ "tag": "v1", "new_sqlite_classes": ["AuthLimiter"] }
 	],
 	"vars": {
-		"ACCOUNT_ID": "2e7307f9e8cd602d0396fc1f4ef532c9",
-		"IMAGES_HASH": "6tUiZyVTUxD3Ml-_t4uvpQ",
-		"CHANGMI_URL": "https://changmi.5209696.xyz",
-		"PUBLIC_BASE": "https://link.aistela.com",
+		// 对外访问地址：部署后填你自己的域名（或先用 *.workers.dev 默认地址）
+		"PUBLIC_BASE": "",
+		// 品牌：可改成你自己的名字和 LOGO 字（单个字/emoji）。留默认也行。
+		"BRAND_NAME": "我的云盘",
+		"BRAND_LOGO": "云",
+		// 容量上限（字节）。默认 9GB，压在 Cloudflare R2 免费额度(10GB)以内，永不产生账单。
+		// 想用更多：绑好卡后把这里调大（超出免费额度按 CF 价格计费，自行承担）。
+		"BYTE_LIMIT": "9663676416",
 		"SESSION_TTL_SECONDS": "604800",
 		"AUTH_MAX_FAILURES": "8",
-		"AUTH_LOCK_SECONDS": "900",
-		// 购买/续费/升级入口：先用站内 /buy 手动收款页（自己的微信/支付宝码）。
-		// 以后想要独立门面 pay.aistela.com，把该子域反代到 link.aistela.com/buy，再把这里改成它即可，代码不动。
-		"BUY_URL": "https://link.aistela.com/buy",
-		// 购买页 /buy 的收款配置（非机密，改完重新部署即生效）：
-		//   PAY_WX_QR / PAY_ALI_QR = 你的微信/支付宝收款码「图片直链」。最省事：把收款码图片拖到存链上传，复制 /i/ 直链贴这里。留空则该码显示“未设置”。
-		//   PAY_CONTACT = 付款后联系客服的方式（如「微信 abc123 / TG @yourname」）
-		//   PRICE_BASIC / PRICE_PRO = 两档价格展示文案（如「¥9.9 / 月」），只是给客户看的，实际收多少你自己定
-		"PAY_WX_QR": "",
-		"PAY_ALI_QR": "",
-		"PAY_CONTACT": "（请在 wrangler.jsonc 填写 PAY_CONTACT）",
-		"PRICE_BASIC": "联系客服",
-		"PRICE_PRO": "联系客服",
-		// 免费试用防薅：同一 IP 每 FREE_SIGNUP_WINDOW 秒最多注册 FREE_SIGNUP_MAX 个免费账号
-		"FREE_SIGNUP_MAX": "3",
-		"FREE_SIGNUP_WINDOW": "86400",
-		// 免费注册人机验证(Cloudflare Turnstile)。留空=不启用(注册无验证码)；
-		// 启用：CF 后台 Turnstile 建一个 widget，把 Site Key 填这里、Secret Key 用 `wrangler secret put TURNSTILE_SECRET`。两个都配好才生效。
-		"TURNSTILE_SITE_KEY": "0x4AAAAAAD0N7hOlgO9srz8l"
+		"AUTH_LOCK_SECONDS": "900"
 	}
-	// 机密（wrangler secret put，不进仓库）：
-	//   CF_IMAGES_TOKEN   Hannah 的 Images:Edit 令牌
-	//   SESSION_SECRET    会话签名随机串
-	//   APP_KEY_TU_BASIC  畅密「图床-basic」应用 app_key
-	//   APP_KEY_TU_PRO    畅密「图床-pro」应用 app_key
-	//   ADMIN_KEY         运营台 /scfw 登录密钥
-	//   TURNSTILE_SECRET  免费注册人机验证的 Turnstile Secret Key（配了才启用验证码）
+	// 机密（wrangler secret put，可选）：
+	//   SESSION_SECRET  会话签名串。不设也行——首次 /setup 会自动生成并存进 D1。
 }
