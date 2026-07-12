@@ -64,6 +64,14 @@ function ctEqual(a, b) {
   for (let i = 0; i < len; i++) diff |= (aa[i] || 0) ^ (bb[i] || 0);
   return diff === 0;
 }
+// 文件直链防枚举：/f/<id> 用数字主键会被人 1,2,3… 遍历下载所有客户文件。
+// 给每个 id 派生一个 HMAC 短令牌，直链写成 /f/<id>~<token>，无令牌或不匹配一律 404。现算，不改库。
+async function fileToken(env, id) {
+  return b64u(await hmac(env.SESSION_SECRET, "file:" + id)).slice(0, 24);
+}
+async function fileLink(env, id) {
+  return (env.PUBLIC_BASE || "") + "/f/" + id + "~" + (await fileToken(env, id));
+}
 
 /* ---------- 密码哈希（PBKDF2-SHA256，Worker 原生） ---------- */
 async function hashPassword(password) {
@@ -248,7 +256,7 @@ async function handleUpload(request, env, customer) {
     ).bind(customer.id, albumId, key, file.name || "file", file.type || "application/octet-stream", file.size, now).run();
     return json({
       ok: true, id: ins.meta.last_row_id, kind: "file", filename: file.name || "file",
-      link: (env.PUBLIC_BASE || "") + "/f/" + ins.meta.last_row_id,
+      link: await fileLink(env, ins.meta.last_row_id),
     });
   } catch (e) {
     console.log("file upload fail: " + (e && e.message ? e.message : e));
@@ -306,7 +314,7 @@ async function handleMpuComplete(request, env, customer) {
   const ins = await env.DB.prepare(
     "INSERT INTO images (customer_id, album_id, kind, cf_id, r2_key, filename, mime, bytes, uploaded_at) VALUES (?,?,'file','',?,?,?,?,?)"
   ).bind(customer.id, albumId, key, String(body.filename || "file"), String(body.mime || "application/octet-stream"), Number(body.size) || 0, now).run();
-  return json({ ok: true, id: ins.meta.last_row_id, kind: "file", link: (env.PUBLIC_BASE || "") + "/f/" + ins.meta.last_row_id });
+  return json({ ok: true, id: ins.meta.last_row_id, kind: "file", link: await fileLink(env, ins.meta.last_row_id) });
 }
 
 /* ---------- 列表 / 删除 / 相册 ---------- */
@@ -320,15 +328,15 @@ async function handleList(request, env, customer, url) {
   } else {
     rows = await env.DB.prepare("SELECT * FROM images WHERE customer_id=? ORDER BY id DESC LIMIT 500").bind(customer.id).all();
   }
-  const images = (rows.results || []).map((im) => {
+  const images = await Promise.all((rows.results || []).map(async (im) => {
     const isImage = im.kind !== "file";
     return {
       id: im.id, kind: isImage ? "image" : "file", filename: im.filename, mime: im.mime, bytes: im.bytes,
       album_id: im.album_id, uploaded_at: im.uploaded_at,
-      link: isImage ? (env.PUBLIC_BASE || "") + "/i/" + im.cf_id : (env.PUBLIC_BASE || "") + "/f/" + im.id,
+      link: isImage ? (env.PUBLIC_BASE || "") + "/i/" + im.cf_id : await fileLink(env, im.id),
       thumb: isImage ? "https://imagedelivery.net/" + env.IMAGES_HASH + "/" + im.cf_id + "/public" : null,
     };
-  });
+  }));
   return json({ images });
 }
 async function handleDeleteImg(request, env, customer, id) {
@@ -406,7 +414,8 @@ async function serveImage(request, env, cfId) {
 }
 
 /* ---------- 文件直链 /f/:id（公开，R2；支持 Range 让视频/音频可拖动播放） ---------- */
-async function serveFile(request, env, id) {
+async function serveFile(request, env, id, token) {
+  if (!token || !ctEqual(token, await fileToken(env, id))) return new Response("Not Found", { status: 404 });
   const row = await env.DB.prepare("SELECT r2_key, filename, mime FROM images WHERE id=? AND kind='file'").bind(id).first();
   if (!row || !row.r2_key) return new Response("Not Found", { status: 404 });
   const hasRange = !!request.headers.get("range");
@@ -542,8 +551,8 @@ export default {
     const im = path.match(/^\/i\/([A-Za-z0-9_-]+)$/);
     if (im) return serveImage(request, env, im[1]);
     // 文件直链（公开，R2）
-    const fm = path.match(/^\/f\/(\d+)$/);
-    if (fm) return serveFile(request, env, Number(fm[1]));
+    const fm = path.match(/^\/f\/(\d+)~([A-Za-z0-9_-]+)$/);
+    if (fm) return serveFile(request, env, Number(fm[1]), fm[2]);
 
     try {
       // 登录/开通：带暴破锁
