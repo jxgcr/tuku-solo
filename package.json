@@ -1,8 +1,8 @@
 {
-  "name": "tuku",
+  "name": "cloud-solo",
   "version": "1.0.0",
   "private": true,
-  "description": "图床 SaaS：多租户图片托管（Hannah + CF Images），对外 tu.aistela.com",
+  "description": "存链-私有版：单人自持文件/图片云盘（纯 R2 + D1），部署到你自己的 Cloudflare",
   "scripts": {
     "verify": "node scripts/verify.mjs"
   }
