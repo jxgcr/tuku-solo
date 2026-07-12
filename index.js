@@ -603,7 +603,7 @@ export default {
 };
 
 /* ---------- 前端页面 ---------- */
-const PAGE_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>存链</title><style>
+const PAGE_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>存链</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%236d5efc'/><text x='50' y='73' font-size='58' text-anchor='middle' fill='%23ffffff' font-family='sans-serif' font-weight='bold'>存</text></svg>"><style>
 :root{--bg:#080910;--bg2:#0b0d15;--card:#10131c;--ink:#EEF1F7;--mut:#8A93A6;--line:rgba(255,255,255,.08);--g1:#a855f7;--g2:#6d5efc;--ok:#34D39A;--amber:#F3B44C;--bad:#F2726F}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);min-height:100vh;line-height:1.5;-webkit-font-smoothing:antialiased}
@@ -663,6 +663,11 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 .usebar>i.warn{background:linear-gradient(90deg,var(--amber),#fb7185)}
 .usebar>i.full{background:linear-gradient(90deg,#fb7185,#ef4444)}
 .usetxt{display:flex;justify-content:space-between;margin-top:10px;font-size:.85rem;font-variant-numeric:tabular-nums}
+.recentrow{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:12px}
+.rtile{aspect-ratio:1.618;border-radius:10px;overflow:hidden;background:#0a0b10;border:1px solid var(--line);cursor:pointer;transition:transform .16s,border-color .16s}
+.rtile:hover{transform:translateY(-2px);border-color:rgba(124,108,255,.45)}
+.rtile img{width:100%;height:100%;object-fit:cover;display:block}
+.rfi{width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:1.9rem}
 .info{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line);font-size:.9rem}
 .info:last-child{border-bottom:0}
 .info .il{color:var(--mut)}
@@ -800,6 +805,10 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
             <div class="info"><span class="il">到期</span><span id="iExp">—</span></div>
           </div>
         </div>
+        <div class="panel" style="margin-top:16px">
+          <div class="ph" style="display:flex;justify-content:space-between;align-items:center">最近上传<span class="muted" id="recMore" style="cursor:pointer;font-weight:400">查看全部 ›</span></div>
+          <div class="recentrow" id="recent"></div>
+        </div>
       </div>
 
       <div id="view-upload" class="view hide">
@@ -896,6 +905,19 @@ function loadMe(){api("/api/me").then(function(d){ME=d;
   $("dUseTxt").textContent=fmtSize(d.usedBytes)+" / "+fmtSize(d.byteLimit);
   $("dPct").textContent=pct.toFixed(pct<10?1:0)+"%";
 }).catch(function(){})}
+function renderRecent(){
+  var box=$("recent");if(!box)return;
+  var arr=ALLFILES.slice().sort(function(a,b){return (b.uploaded_at||0)-(a.uploaded_at||0)}).slice(0,10);
+  box.innerHTML="";
+  if(!arr.length){box.innerHTML="<div class='muted'>还没有文件，去上传第一个吧</div>";return}
+  arr.forEach(function(im){
+    var t=document.createElement("div");t.className="rtile";
+    if(im.kind==="image"){var img=document.createElement("img");img.src=im.thumb;img.loading="lazy";t.appendChild(img)}
+    else{var fi=document.createElement("div");fi.className="rfi";fi.textContent=typeIcon(typeOf(im));t.appendChild(fi)}
+    t.onclick=function(){if(im.kind==="image"){LB=ALLFILES.filter(function(x){return x.kind==="image"});LBI=0;for(var k=0;k<LB.length;k++){if(LB[k].id===im.id){LBI=k;break}}$("lbImg").src=LB[LBI].link;show("lightbox")}else window.open(im.link,"_blank")};
+    box.appendChild(t);
+  });
+}
 function navTo(spec){
   clearSel();closeDrawer();closeOverlays();
   if(spec.view){VIEW=spec.view}
@@ -906,7 +928,7 @@ function navTo(spec){
   $("view-files").classList.toggle("hide",VIEW!=="files");
   $("pageTitle").textContent=VIEW==="dash"?"仪表盘":VIEW==="upload"?"上传文件":"我的文件";
   renderNav();
-  if(VIEW==="dash")loadMe();
+  if(VIEW==="dash"){loadMe();renderRecent()}
   if(VIEW==="files")renderFiles();
 }
 function renderNav(){
@@ -1126,6 +1148,7 @@ $("moveCancel").onclick=function(){hide("moveOverlay")};
 $("setClose").onclick=function(){hide("setOverlay")};
 $("setLogout").onclick=function(){hide("setOverlay");logout()};
 $("goUpload").addEventListener("click",function(){navTo({view:"upload"})});
+$("recMore").addEventListener("click",function(){navTo({type:"all"})});
 $("logoutBtn").addEventListener("click",logout);
 $("delAlbumBtn").addEventListener("click",function(){if(NAV.album!=null)delAlbum(NAV.album)});
 $("q").addEventListener("input",function(){Q=this.value;renderFiles()});
@@ -1158,7 +1181,7 @@ if(TOKEN)enterApp();
 </script></body></html>`;
 
 /* ---------- 运营台页面 /scfw ---------- */
-const ADMIN_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>存链 · 运营台</title><style>
+const ADMIN_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>存链 · 运营台</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%236d5efc'/><text x='50' y='73' font-size='58' text-anchor='middle' fill='%23ffffff' font-family='sans-serif' font-weight='bold'>存</text></svg>"><style>
 :root{--bg:#080910;--bg2:#0b0d15;--card:#10131c;--ink:#EEF1F7;--mut:#8A93A6;--line:rgba(255,255,255,.08);--g1:#a855f7;--g2:#6d5efc;--ok:#34D39A;--amber:#F3B44C;--bad:#F2726F}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);min-height:100vh;line-height:1.5;-webkit-font-smoothing:antialiased}
