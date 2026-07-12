@@ -39,7 +39,7 @@
 |---|---|---|
 | `BRAND_NAME` | 云盘显示的名字 | `我的云盘` |
 | `BRAND_LOGO` | LOGO 里的字（一个字或 emoji） | `云` |
-| `BYTE_LIMIT` | 容量上限（字节）。默认 9GB，压在 R2 免费额度(10GB)内**永不产生账单** | `9663676416` |
+| `BYTE_LIMIT` | 容量上限（字节）。默认 9.8GB，压在 R2 免费额度(10GB)内**永不产生账单** | `10522669875` |
 | `PUBLIC_BASE` | 你的自定义域名（留空则用 workers.dev 地址，直链也能用） | 空 |
 
 **想用自己的域名**：在 Cloudflare 后台把域名加到这个 Worker（Custom Domain），再把 `PUBLIC_BASE` 填成 `https://你的域名`。

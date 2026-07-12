@@ -6,20 +6,48 @@
 	// 存链-私有版（solo）：部署到「你自己」的 Cloudflare 账号。数据全在你账号里，只归你。
 	// 纯 R2 存储（图片也存 R2），不用 CF Images、不用畅密、无多租户、无运营台。
 	// 「Deploy to Cloudflare」按钮会自动创建下面的 D1 / R2 / DO 并回填 id；本地部署则先手动建。
-	"observability": { "enabled": true },
+	"observability": {
+		"enabled": true
+	},
 	// 每 6 小时对账，补删删除失败留下的孤儿存储对象
-	"triggers": { "crons": ["17 */6 * * *"] },
+	"triggers": {
+		"crons": [
+			"17 */6 * * *"
+		]
+	},
 	"d1_databases": [
-		{ "binding": "DB", "database_name": "cloud-db", "database_id": "" }
+		{
+			"binding": "DB",
+			"database_name": "cloud-db",
+			"database_id": ""
+		}
 	],
 	"r2_buckets": [
-		{ "binding": "R2", "bucket_name": "cloud-files" }
+		{
+			"binding": "R2",
+			"bucket_name": "cloud-files"
+		},
+		{
+			"bucket_name": "cloud-files-scf",
+			"binding": "cloud_files_scf",
+			"remote": true
+		}
 	],
 	"durable_objects": {
-		"bindings": [{ "name": "AUTH_LIMITER", "class_name": "AuthLimiter" }]
+		"bindings": [
+			{
+				"name": "AUTH_LIMITER",
+				"class_name": "AuthLimiter"
+			}
+		]
 	},
 	"migrations": [
-		{ "tag": "v1", "new_sqlite_classes": ["AuthLimiter"] }
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"AuthLimiter"
+			]
+		}
 	],
 	"vars": {
 		// 对外访问地址：保持 auto = 自动用部署网址(workers.dev 或你绑的域名)。
@@ -30,7 +58,7 @@
 		"BRAND_LOGO": "云",
 		// 容量上限（字节）。默认 9GB，压在 Cloudflare R2 免费额度(10GB)以内，永不产生账单。
 		// 想用更多：绑好卡后把这里调大（超出免费额度按 CF 价格计费，自行承担）。
-		"BYTE_LIMIT": "9663676416",
+		"BYTE_LIMIT": "10522669875",
 		"SESSION_TTL_SECONDS": "604800",
 		"AUTH_MAX_FAILURES": "8",
 		"AUTH_LOCK_SECONDS": "900"
