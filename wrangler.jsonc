@@ -26,7 +26,7 @@
 		"ACCOUNT_ID": "2e7307f9e8cd602d0396fc1f4ef532c9",
 		"IMAGES_HASH": "6tUiZyVTUxD3Ml-_t4uvpQ",
 		"CHANGMI_URL": "https://changmi.5209696.xyz",
-		"PUBLIC_BASE": "https://tu.aistela.com",
+		"PUBLIC_BASE": "https://link.aistela.com",
 		"SESSION_TTL_SECONDS": "604800",
 		"AUTH_MAX_FAILURES": "8",
 		"AUTH_LOCK_SECONDS": "900"

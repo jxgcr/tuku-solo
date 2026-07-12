@@ -8,8 +8,8 @@ const GB = 1073741824;
 const DEFAULT_SESSION_TTL = 7 * 24 * 3600;
 // 档位：容量上限（字节）。价格是运营侧的事，这里只管容量闸。改档位改这里重新部署。
 const TIERS = {
-  basic: { byteLimit: 5 * GB, label: "图床-基础" },
-  pro: { byteLimit: 50 * GB, label: "图床-专业" },
+  basic: { byteLimit: 5 * GB, label: "存链-基础" },
+  pro: { byteLimit: 50 * GB, label: "存链-专业" },
 };
 function fmtGB(b) { const g = Number(b) / GB; return (g >= 10 || g === Math.floor(g) ? g.toFixed(0) : g.toFixed(1)) + "GB"; }
 function safeName(n) { return String(n || "file").replace(/[^\w.\-]/g, "_").slice(-80) || "file"; }
@@ -594,7 +594,7 @@ export default {
 };
 
 /* ---------- 前端页面 ---------- */
-const PAGE_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>图床</title><style>
+const PAGE_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>存链</title><style>
 :root{--bg:#090a0f;--card:#0e1017;--ink:#EEF1F7;--mut:#99A2B4;--line:rgba(255,255,255,.09);--g1:#a855f7;--g2:#6d5efc;--ok:#34D39A;--bad:#F2726F}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);min-height:100vh;line-height:1.5}
@@ -648,7 +648,7 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 </style></head><body><div class="bg"></div>
 <div class="wrap">
-  <div class="top"><h1><span class="logo">图</span>图床</h1><div id="who" class="muted"></div></div>
+  <div class="top"><h1><span class="logo">存</span>存链</h1><div id="who" class="muted"></div></div>
 
   <div id="loginView" class="login"><div class="card">
     <h2 style="font-size:1.1rem">登录 / 开通</h2>
@@ -821,7 +821,7 @@ if(TOKEN)enterApp();
 </script></body></html>`;
 
 /* ---------- 运营台页面 /admin ---------- */
-const ADMIN_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>图床 · 运营台</title><style>
+const ADMIN_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>存链 · 运营台</title><style>
 :root{--bg:#090a0f;--card:#0e1017;--ink:#EEF1F7;--mut:#99A2B4;--line:rgba(255,255,255,.09);--g1:#a855f7;--g2:#6d5efc;--ok:#34D39A;--bad:#F2726F;--warn:#F3C24C}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);min-height:100vh;line-height:1.5}
@@ -869,7 +869,7 @@ input:focus,select:focus{border-color:rgba(124,108,255,.55)}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 </style></head><body><div class="bg"></div>
 <div class="wrap">
-  <div class="top"><h1><span class="logo">图</span>图床 · 运营台</h1><div style="display:flex;gap:8px"><button class="sm" id="refreshBtn">刷新</button><button class="sm" id="logoutBtn">退出</button></div></div>
+  <div class="top"><h1><span class="logo">存</span>存链 · 运营台</h1><div style="display:flex;gap:8px"><button class="sm" id="refreshBtn">刷新</button><button class="sm" id="logoutBtn">退出</button></div></div>
   <div class="stats" id="stats"></div>
   <div class="tblwrap"><table><thead><tr><th>#</th><th>卡号</th><th>档位</th><th>用量 / 容量</th><th>文件</th><th>到期</th><th>状态</th><th>操作</th></tr></thead><tbody id="rows"></tbody></table></div>
 </div>
@@ -880,7 +880,7 @@ input:focus,select:focus{border-color:rgba(124,108,255,.55)}
 </div></div>
 <div class="overlay" id="editOverlay"><div class="modal">
   <h2>改客户</h2><div class="note" id="editWho" style="margin-bottom:6px"></div>
-  <label>套餐（改档位会套用该档默认容量）</label><select id="eTier"><option value="">不改</option><option value="basic">图床-基础</option><option value="pro">图床-专业</option></select>
+  <label>套餐（改档位会套用该档默认容量）</label><select id="eTier"><option value="">不改</option><option value="basic">存链-基础</option><option value="pro">存链-专业</option></select>
   <label>容量上限（GB，留空=不改）</label><input id="eGB" type="number" placeholder="如 5 / 50 / 100">
   <label>到期日（留空=不改）</label><input id="eDate" type="date">
   <div class="foot"><button id="editCancel">取消</button><button class="pri" id="editSave">保存</button></div>
