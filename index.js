@@ -424,10 +424,17 @@ async function serveFile(request, env, id, token) {
   const headers = new Headers();
   obj.writeHttpMetadata(headers);
   if (obj.httpEtag) headers.set("etag", obj.httpEtag);
-  headers.set("content-type", row.mime || headers.get("content-type") || "application/octet-stream");
+  const mime = row.mime || headers.get("content-type") || "application/octet-stream";
+  headers.set("content-type", mime);
   headers.set("cache-control", "public, max-age=3600");
   headers.set("accept-ranges", "bytes");
-  if (new URL(request.url).searchParams.get("dl")) headers.set("content-disposition", "attachment; filename*=UTF-8''" + encodeURIComponent(row.filename || "file"));
+  // 安全：禁止 MIME 嗅探(防 .txt 被当 html 渲染)；对可执行脚本的文档类型(html/svg/xml)强制下载+沙箱，
+  // 杜绝"上传恶意 HTML/SVG → 直链在本域内联执行 → 偷 token"这类存储型 XSS。视频/音频/PDF 等安全类型保留内联预览。
+  headers.set("x-content-type-options", "nosniff");
+  const dangerous = /(html|svg|xml)/i.test(mime);
+  const wantDl = !!new URL(request.url).searchParams.get("dl");
+  if (dangerous) headers.set("content-security-policy", "sandbox");
+  if (dangerous || wantDl) headers.set("content-disposition", "attachment; filename*=UTF-8''" + encodeURIComponent(row.filename || "file"));
   if (hasRange && obj.range) {
     const off = obj.range.offset || 0;
     const len = obj.range.length != null ? obj.range.length : (obj.size - off);
