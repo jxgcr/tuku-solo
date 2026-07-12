@@ -1085,9 +1085,9 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
       <a class="nl" id="navLogin">登录</a>
     </nav>
     <header class="hero">
-      <span class="tagline">图床 · 网盘 · 开发者直传，一站搞定</span>
-      <h1>把文件与图片，<span class="grad">安心托管</span>在一条链接里</h1>
-      <p class="sub">拖拽即传、粘贴即传，自动生成直链 / Markdown / HTML；大文件断点续传，视频音频在线预览。支持 PicGo / Typora 一键直传，写博客配图从此不折腾。</p>
+      <span class="tagline">你的私人云盘 · 数据只归你</span>
+      <h1>一套只属于你的<span class="grad">私人云盘</span></h1>
+      <p class="sub">你的文件，你做主——图片、视频、文档、任意文件，私密存放、随时取用。拖拽即传、粘贴即传，自动生成分享直链；大文件断点续传，还能配 PicGo / Typora 一键上传。</p>
       <div class="cta">
         <button class="pri" id="heroFree">🚀 免费试用 · 500MB</button>
         <a href="__BUY_URL__" target="_blank" rel="noopener"><button>购买正式版</button></a>
@@ -1097,14 +1097,14 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 
     <section class="sect" id="secFeat">
       <h2>为什么选存链</h2>
-      <div class="lead">省心、够快、好看——把自建图床该有的都做到位</div>
+      <div class="lead">私密、省心、好看——一个真正属于你自己的云盘</div>
       <div class="feat">
-        <div class="fcard"><div class="fi">⚡</div><h3>拖拽 / 粘贴即传</h3><p>拖进来、Ctrl+V 粘贴截图就上传，自动压缩、可加水印，秒出直链。</p></div>
-        <div class="fcard"><div class="fi">🎬</div><h3>不止图片</h3><p>视频、音频、PDF、压缩包任意文件；视频音频支持在线拖动预览。</p></div>
-        <div class="fcard"><div class="fi">🧩</div><h3>大文件断点续传</h3><p>大文件自动分片直传，断网重拖从断点继续，不用从头再来。</p></div>
-        <div class="fcard"><div class="fi">🔗</div><h3>多格式链接</h3><p>一键复制直链 / Markdown / HTML / BBCode / 缩略图，配博客论坛都顺手。</p></div>
-        <div class="fcard"><div class="fi">🗂️</div><h3>相册与批量管理</h3><p>相册归类、多选批量删除移动、搜索排序、灯箱看大图，文件不再乱。</p></div>
-        <div class="fcard"><div class="fi">🔒</div><h3>私密可靠</h3><p>文件不公开、直链带签名令牌防枚举；删除真删，存储对账兜底不留孤儿。</p></div>
+        <div class="fcard"><div class="fi">🔒</div><h3>只有你能看</h3><p>文件默认不公开、不被搜索到；分享链接带签名防猜，别人改数字也进不来。删除真删不留残影。</p></div>
+        <div class="fcard"><div class="fi">🗂️</div><h3>什么都能存</h3><p>图片、视频、音频、PDF、压缩包，任意文件统一收纳；视频音频在线拖动预览。</p></div>
+        <div class="fcard"><div class="fi">⚡</div><h3>拖拽 / 粘贴即传</h3><p>拖进来、Ctrl+V 粘贴截图就上传，可暂停 / 取消，大文件断网重拖从断点继续。</p></div>
+        <div class="fcard"><div class="fi">🔗</div><h3>一键分享</h3><p>直链 / Markdown / HTML / BBCode 多格式一键复制，配博客、论坛、发朋友都顺手。</p></div>
+        <div class="fcard"><div class="fi">📁</div><h3>整理不乱</h3><p>相册归类、多选批量、搜索排序、灯箱看大图，空间构成一眼看清。</p></div>
+        <div class="fcard"><div class="fi">🧩</div><h3>开发者友好</h3><p>生成 API 密钥，配 PicGo / Typora 截图即传，写作工作流零打断。</p></div>
       </div>
     </section>
 
@@ -1115,7 +1115,7 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
         <div class="plan">
           <div class="pname">存链-免费</div>
           <div class="pcap">500<small> MB</small></div>
-          <ul><li>无需卡密，设密码即用</li><li>图片 / 文件通用托管</li><li>图片带品牌水印</li><li>体验全部核心功能</li></ul>
+          <ul><li>无需卡密，设密码即用</li><li>任意文件，私密存放</li><li>图片带品牌水印</li><li>体验全部核心功能</li></ul>
           <div class="pf"><button id="planFree">免费开始</button></div>
         </div>
         <div class="plan hot">
