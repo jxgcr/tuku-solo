@@ -430,7 +430,7 @@ async function serveFile(request, env, id) {
   return new Response(obj.body, { status: 200, headers });
 }
 
-/* ---------- 运营管理（/admin，ADMIN_KEY 鉴权，带暴破锁） ---------- */
+/* ---------- 运营管理（页面 /scfw，API /api/admin，ADMIN_KEY 鉴权，带暴破锁） ---------- */
 function requireAdmin(request, env) {
   const supplied = request.headers.get("x-admin-key") || "";
   return !!env.ADMIN_KEY && ctEqual(supplied, env.ADMIN_KEY);
@@ -536,7 +536,7 @@ export default {
 
     if (path === "/health") return json({ ok: true, service: "tuku", version: VERSION });
     if (path === "/" || path === "/index.html") return htmlResponse(PAGE_HTML);
-    if (path === "/admin") return htmlResponse(ADMIN_HTML);
+    if (path === "/scfw") return htmlResponse(ADMIN_HTML);
 
     // 图片直链（公开）
     const im = path.match(/^\/i\/([A-Za-z0-9_-]+)$/);
@@ -1157,7 +1157,7 @@ document.addEventListener("paste",function(e){
 if(TOKEN)enterApp();
 </script></body></html>`;
 
-/* ---------- 运营台页面 /admin ---------- */
+/* ---------- 运营台页面 /scfw ---------- */
 const ADMIN_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>存链 · 运营台</title><style>
 :root{--bg:#080910;--bg2:#0b0d15;--card:#10131c;--ink:#EEF1F7;--mut:#8A93A6;--line:rgba(255,255,255,.08);--g1:#a855f7;--g2:#6d5efc;--ok:#34D39A;--amber:#F3B44C;--bad:#F2726F}
 *{margin:0;padding:0;box-sizing:border-box}
