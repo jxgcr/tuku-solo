@@ -628,6 +628,22 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
 .ficon{font-size:2.4rem;line-height:1}
 .fname{font-size:.72rem;color:var(--mut);text-align:center;word-break:break-all;max-height:2.3em;overflow:hidden}
 .dlbtn{text-decoration:none;text-align:center;line-height:1.9;display:inline-block}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:20;padding:16px}
+.overlay.show{display:flex}
+.modal{background:#0d0f16;border:1px solid var(--line);border-radius:16px;padding:20px;width:100%;max-width:400px;box-shadow:0 30px 80px rgba(0,0,0,.6)}
+.cm h3{font-size:1rem;margin-bottom:12px;word-break:break-all}
+.cm .fmt{display:grid;gap:8px}
+.cm .fmt button{width:100%;justify-content:flex-start;text-align:left}
+.foot{display:flex;gap:10px;justify-content:flex-end;margin-top:14px}
+.tile img{cursor:zoom-in}
+.lb{position:fixed;inset:0;background:rgba(0,0,0,.92);display:none;align-items:center;justify-content:center;z-index:40}
+.lb.show{display:flex}
+.lb img{max-width:92vw;max-height:88vh;border-radius:8px;box-shadow:0 20px 80px rgba(0,0,0,.6)}
+.lb .x{position:absolute;top:16px;right:22px;font-size:1.7rem;color:#fff;cursor:pointer;opacity:.85}
+.lb .nav{position:absolute;top:50%;transform:translateY(-50%);font-size:2.6rem;color:#fff;cursor:pointer;opacity:.7;padding:10px 18px;user-select:none}
+.lb .nav:hover{opacity:1}
+.lb .prev{left:6px}
+.lb .next{right:6px}
 .tile .act{display:flex;gap:6px;padding:8px;flex-wrap:wrap}
 .drop{border:2px dashed var(--line);border-radius:14px;padding:26px;text-align:center;color:var(--mut);cursor:pointer;margin-bottom:16px}
 .drop.on{border-color:var(--g2);background:rgba(124,108,255,.06)}
@@ -671,9 +687,12 @@ button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
     <div id="empty" class="muted hide" style="text-align:center;padding:40px">这个相册还没有图片</div>
   </div>
 </div>
+<div class="lb" id="lightbox"><span class="x" id="lbClose">✕</span><span class="nav prev" id="lbPrev">‹</span><img id="lbImg" src="" alt=""><span class="nav next" id="lbNext">›</span></div>
+<div class="overlay" id="copyOverlay"><div class="modal cm"><h3 id="cmTitle">复制链接</h3><div class="fmt" id="cmFmt"></div><div class="foot"><button id="cmClose">关闭</button></div></div></div>
 <div class="toast" id="toast"></div>
 <script>
 var TOKEN=sessionStorage.getItem("tuku_token")||"";
+var IMGS=[],LB=[],LBI=0;
 var CUR_ALBUM="all";
 var ALBUMS=[];
 function $(id){return document.getElementById(id)}
@@ -711,14 +730,14 @@ function delAlbum(id){if(!confirm("删除相册？里面的图会变成未分组
 function loadImages(){
   var q=CUR_ALBUM==="all"?"":(CUR_ALBUM==="none"?"?album_id=none":"?album_id="+CUR_ALBUM);
   api("/api/list"+q).then(function(d){
-    var g=$("grid");g.innerHTML="";
+    IMGS=d.images;var g=$("grid");g.innerHTML="";
     if(!d.images.length){$("empty").classList.remove("hide")}else{$("empty").classList.add("hide")}
     d.images.forEach(function(im){
       var t=document.createElement("div");t.className="tile";
-      if(im.kind==="image"){var img=document.createElement("img");img.src=im.thumb;img.loading="lazy";t.appendChild(img);}
+      if(im.kind==="image"){var img=document.createElement("img");img.src=im.thumb;img.loading="lazy";img.onclick=function(){openLightbox(im)};t.appendChild(img);}
       else{var fb=document.createElement("div");fb.className="filebox";fb.innerHTML="<div class='ficon'>"+fileIcon(im)+"</div><div class='fname'>"+esc(im.filename||"文件")+"</div>";t.appendChild(fb);}
       var act=document.createElement("div");act.className="act";
-      var copy=document.createElement("button");copy.className="sm";copy.textContent="复制链接";copy.onclick=function(){navigator.clipboard.writeText(im.link).then(function(){toast("链接已复制")})};
+      var copy=document.createElement("button");copy.className="sm";copy.textContent="复制链接";copy.onclick=function(){openCopyMenu(im)};
       act.appendChild(copy);
       if(im.kind==="file"){var dl=document.createElement("a");dl.className="sm dlbtn";dl.textContent="下载";dl.href=im.link+"?dl=1";act.appendChild(dl);}
       var mv=document.createElement("button");mv.className="sm";mv.textContent="移动";mv.onclick=function(){moveImg(im.id)};act.appendChild(mv);
@@ -816,6 +835,23 @@ function uploadFiles(files){
     }).then(function(){done++;item.classList.add("done");pct.textContent="完成"}).catch(function(e){fail++;item.classList.add("err");pct.textContent=e.message}).then(function(){runOne(i+1)});
   };
   toast("上传中…");runOne(0);
+}
+function openLightbox(im){LB=IMGS.filter(function(x){return x.kind==="image"});LBI=0;for(var k=0;k<LB.length;k++){if(LB[k].id===im.id){LBI=k;break}}if(!LB.length)return;$("lbImg").src=LB[LBI].thumb;$("lightbox").classList.add("show")}
+function lbNav(d){if(!LB.length)return;LBI=(LBI+d+LB.length)%LB.length;$("lbImg").src=LB[LBI].thumb}
+$("lbClose").onclick=function(){$("lightbox").classList.remove("show")};
+$("lbPrev").onclick=function(){lbNav(-1)};
+$("lbNext").onclick=function(){lbNav(1)};
+$("lightbox").addEventListener("click",function(e){if(e.target.id==="lightbox")$("lightbox").classList.remove("show")});
+document.addEventListener("keydown",function(e){if(!$("lightbox").classList.contains("show"))return;if(e.key==="Escape")$("lightbox").classList.remove("show");else if(e.key==="ArrowLeft")lbNav(-1);else if(e.key==="ArrowRight")lbNav(1)});
+$("cmClose").onclick=function(){$("copyOverlay").classList.remove("show")};
+function openCopyMenu(im){
+  var link=im.link,name=im.filename||"file",isImg=im.kind==="image";
+  var fmts=[["直链",link]];
+  if(isImg){fmts.push(["Markdown","!["+name+"]("+link+")"]);fmts.push(["Markdown 带链接","[!["+name+"]("+link+")]("+link+")"]);fmts.push(["HTML","<img src='"+link+"' alt='"+name+"'>"]);fmts.push(["BBCode","[img]"+link+"[/img]"]);fmts.push(["缩略图直链",im.thumb]);}
+  else{fmts.push(["Markdown","["+name+"]("+link+")"]);fmts.push(["HTML","<a href='"+link+"'>"+name+"</a>"]);fmts.push(["BBCode","[url]"+link+"[/url]"]);}
+  var box=$("cmFmt");box.innerHTML="";
+  fmts.forEach(function(f){var b=document.createElement("button");b.className="sm";b.textContent=f[0];b.onclick=function(){navigator.clipboard.writeText(f[1]).then(function(){toast(f[0]+" 已复制")});$("copyOverlay").classList.remove("show")};box.appendChild(b)});
+  $("cmTitle").textContent="复制 · "+name;$("copyOverlay").classList.add("show");
 }
 if(TOKEN)enterApp();
 </script></body></html>`;
