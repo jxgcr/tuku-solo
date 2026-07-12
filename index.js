@@ -422,6 +422,72 @@ async function serveFile(request, env, id) {
   return new Response(obj.body, { status: 200, headers });
 }
 
+/* ---------- 运营管理（/admin，ADMIN_KEY 鉴权，带暴破锁） ---------- */
+function requireAdmin(request, env) {
+  const supplied = request.headers.get("x-admin-key") || "";
+  return !!env.ADMIN_KEY && ctEqual(supplied, env.ADMIN_KEY);
+}
+async function adminGate(request, env) {
+  const lim = limiter(env, "admin:" + clientIp(request));
+  const max = envNumber(env, "AUTH_MAX_FAILURES", 8), lock = envNumber(env, "AUTH_LOCK_SECONDS", 900);
+  if (lim) {
+    const c = await (await lim.fetch("https://do/check?max=" + max + "&lock=" + lock)).json();
+    if (c.locked) return { error: json({ error: "尝试过于频繁，请稍后再试" }, 429) };
+  }
+  if (!requireAdmin(request, env)) {
+    if (lim) await lim.fetch("https://do/fail?max=" + max + "&lock=" + lock);
+    return { error: json({ error: "管理密钥不正确" }, 401) };
+  }
+  if (lim) await lim.fetch("https://do/reset");
+  return { ok: true };
+}
+async function handleAdminList(env) {
+  const rows = await env.DB.prepare(
+    "SELECT c.id, c.card, c.tier, c.byte_limit, c.expires_at, c.status, c.created_at, " +
+    "COALESCE((SELECT SUM(bytes) FROM images i WHERE i.customer_id=c.id),0) AS used_bytes, " +
+    "(SELECT COUNT(*) FROM images i WHERE i.customer_id=c.id) AS files FROM customers c ORDER BY c.id DESC"
+  ).all();
+  const customers = (rows.results || []).map((c) => ({
+    id: c.id, card: c.card, tier: c.tier, tierLabel: (TIERS[c.tier] || {}).label || c.tier,
+    byteLimit: c.byte_limit, usedBytes: c.used_bytes, files: c.files,
+    usedGB: fmtGB(c.used_bytes || 0), limitGB: fmtGB(c.byte_limit || 0),
+    expiresAt: c.expires_at ? new Date(c.expires_at * 1000).toISOString() : null,
+    status: c.status, createdAt: c.created_at ? new Date(c.created_at * 1000).toISOString() : null,
+  }));
+  const totalBytes = customers.reduce((s, c) => s + Number(c.usedBytes || 0), 0);
+  const stats = {
+    total: customers.length,
+    active: customers.filter((c) => c.status === "active").length,
+    totalFiles: customers.reduce((s, c) => s + Number(c.files || 0), 0),
+    totalGB: fmtGB(totalBytes),
+  };
+  return json({ customers, stats });
+}
+async function handleAdminUpdate(env, id, body) {
+  const sets = [], binds = [];
+  if (body.status === "active" || body.status === "disabled") { sets.push("status=?"); binds.push(body.status); }
+  if (body.tier && TIERS[body.tier]) { sets.push("tier=?", "byte_limit=?"); binds.push(body.tier, TIERS[body.tier].byteLimit); }
+  if (body.byteLimit != null && Number.isFinite(Number(body.byteLimit))) { sets.push("byte_limit=?"); binds.push(Number(body.byteLimit)); }
+  if (body.expiresAt !== undefined) { sets.push("expires_at=?"); binds.push(body.expiresAt ? Math.floor(new Date(body.expiresAt).getTime() / 1000) : null); }
+  if (!sets.length) return json({ error: "没有要改的项" }, 400);
+  binds.push(id);
+  await env.DB.prepare("UPDATE customers SET " + sets.join(",") + " WHERE id=?").bind(...binds).run();
+  return json({ ok: true });
+}
+async function handleAdminDelete(env, id) {
+  const files = await env.DB.prepare("SELECT cf_id, r2_key, kind FROM images WHERE customer_id=?").bind(id).all();
+  for (const f of (files.results || [])) {
+    try {
+      if (f.kind === "file" && f.r2_key) await env.R2.delete(f.r2_key);
+      else if (f.cf_id) await imagesApi(env, "/" + encodeURIComponent(f.cf_id), { method: "DELETE" });
+    } catch (e) { /* 尽力删，不阻断 */ }
+  }
+  await env.DB.prepare("DELETE FROM images WHERE customer_id=?").bind(id).run();
+  await env.DB.prepare("DELETE FROM albums WHERE customer_id=?").bind(id).run();
+  await env.DB.prepare("DELETE FROM customers WHERE id=?").bind(id).run();
+  return json({ ok: true });
+}
+
 /* ---------- 登录暴破限流 Durable Object ---------- */
 export class AuthLimiter {
   constructor(state) { this.state = state; }
@@ -462,6 +528,7 @@ export default {
 
     if (path === "/health") return json({ ok: true, service: "tuku", version: VERSION });
     if (path === "/" || path === "/index.html") return htmlResponse(PAGE_HTML);
+    if (path === "/admin") return htmlResponse(ADMIN_HTML);
 
     // 图片直链（公开）
     const im = path.match(/^\/i\/([A-Za-z0-9_-]+)$/);
@@ -485,6 +552,18 @@ export default {
           else if (resp.status === 200) await lim.fetch("https://do/reset");
         }
         return resp;
+      }
+
+      // 运营管理 API（ADMIN_KEY，不走客户会话）
+      if (path === "/api/admin/customers" && request.method === "GET") {
+        const g = await adminGate(request, env); if (g.error) return g.error;
+        return await handleAdminList(env);
+      }
+      let am;
+      if ((am = path.match(/^\/api\/admin\/customers\/(\d+)$/))) {
+        const g = await adminGate(request, env); if (g.error) return g.error;
+        if (request.method === "POST") return await handleAdminUpdate(env, Number(am[1]), await request.json().catch(() => ({})));
+        if (request.method === "DELETE") return await handleAdminDelete(env, Number(am[1]));
       }
 
       // 以下都要登录
@@ -739,4 +818,125 @@ function uploadFiles(files){
   toast("上传中…");runOne(0);
 }
 if(TOKEN)enterApp();
+</script></body></html>`;
+
+/* ---------- 运营台页面 /admin ---------- */
+const ADMIN_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>图床 · 运营台</title><style>
+:root{--bg:#090a0f;--card:#0e1017;--ink:#EEF1F7;--mut:#99A2B4;--line:rgba(255,255,255,.09);--g1:#a855f7;--g2:#6d5efc;--ok:#34D39A;--bad:#F2726F;--warn:#F3C24C}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);min-height:100vh;line-height:1.5}
+.bg{position:fixed;inset:0;z-index:-1;background:radial-gradient(circle at 0% 0%,rgba(124,92,255,.28),transparent 34%),radial-gradient(circle at 100% 0%,rgba(45,212,191,.18),transparent 32%),radial-gradient(circle at 100% 100%,rgba(245,166,35,.14),transparent 34%)}
+.wrap{max-width:1200px;margin:0 auto;padding:24px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px;flex-wrap:wrap}
+h1{font-size:1.35rem;display:flex;align-items:center;gap:10px}
+.logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--g2),var(--g1));display:flex;align-items:center;justify-content:center;font-weight:900;color:#fff}
+.stats{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 20px;min-width:150px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
+.stat .num{font-size:1.7rem;font-weight:800;font-variant-numeric:tabular-nums;background:linear-gradient(135deg,var(--g2),var(--g1));-webkit-background-clip:text;background-clip:text;color:transparent}
+.stat .lbl{font-size:.75rem;color:var(--mut);margin-top:2px}
+.tblwrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px}
+table{width:100%;border-collapse:collapse;background:var(--card)}
+th,td{padding:11px 12px;text-align:left;font-size:.84rem;border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}
+th{color:var(--mut);font-weight:600;font-size:.76rem}
+tr:last-child td{border-bottom:0}
+tr:hover td{background:rgba(255,255,255,.02)}
+.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.78rem;color:#c9b8ff}
+.badge{display:inline-block;font-size:.72rem;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+.badge.on{color:var(--ok);background:rgba(52,211,153,.1);border-color:rgba(52,211,153,.3)}
+.badge.off{color:var(--bad);background:rgba(242,114,111,.1);border-color:rgba(242,114,111,.3)}
+.badge.exp{color:var(--warn);background:rgba(243,194,76,.1);border-color:rgba(243,194,76,.3)}
+.badge.tier{color:#a78bfa;background:rgba(124,92,255,.12);border-color:rgba(124,92,255,.35)}
+.pbar{height:6px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden;min-width:100px;margin-top:4px}
+.pbar>i{display:block;height:100%;background:linear-gradient(90deg,var(--g2),var(--g1))}
+.pbar>i.full{background:linear-gradient(90deg,#fb7185,#ef4444)}
+.acts{display:flex;flex-direction:column;gap:5px}
+button,input,select{font:inherit}
+button{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.06);color:var(--ink);font-weight:600;cursor:pointer;padding:9px 14px;transition:.15s}
+button:hover{background:rgba(255,255,255,.11)}
+button.pri{border:0;background:linear-gradient(135deg,var(--g2),var(--g1));color:#fff}
+button.sm{padding:5px 9px;font-size:.76rem}
+button.danger{color:var(--bad);border-color:rgba(242,114,111,.35)}
+input,select{width:100%;border:1px solid var(--line);border-radius:9px;background:rgba(255,255,255,.05);color:var(--ink);padding:11px 12px;outline:0}
+input:focus,select:focus{border-color:rgba(124,108,255,.55)}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:20;padding:16px}
+.overlay.show{display:flex}
+.modal{background:#0d0f16;border:1px solid var(--line);border-radius:16px;padding:22px;width:100%;max-width:420px;box-shadow:0 30px 80px rgba(0,0,0,.6)}
+.modal h2{font-size:1.1rem;margin-bottom:12px}
+.modal label{display:block;color:var(--mut);font-size:.8rem;margin:10px 0 5px}
+.foot{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
+.note{color:var(--mut);font-size:.82rem;white-space:pre-line}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);opacity:0;background:rgba(14,16,26,.95);border:1px solid var(--line);border-radius:12px;padding:12px 16px;transition:.2s;pointer-events:none;z-index:30}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style></head><body><div class="bg"></div>
+<div class="wrap">
+  <div class="top"><h1><span class="logo">图</span>图床 · 运营台</h1><div style="display:flex;gap:8px"><button class="sm" id="refreshBtn">刷新</button><button class="sm" id="logoutBtn">退出</button></div></div>
+  <div class="stats" id="stats"></div>
+  <div class="tblwrap"><table><thead><tr><th>#</th><th>卡号</th><th>档位</th><th>用量 / 容量</th><th>文件</th><th>到期</th><th>状态</th><th>操作</th></tr></thead><tbody id="rows"></tbody></table></div>
+</div>
+<div class="overlay" id="loginOverlay"><div class="modal">
+  <h2>运营台登录</h2><label>管理密钥（ADMIN_KEY）</label><input id="akey" type="password" placeholder="输入管理密钥">
+  <div class="foot"><button class="pri" id="loginBtn" style="width:100%">进入</button></div>
+  <div class="note" id="loginErr" style="color:var(--bad);min-height:18px;margin-top:8px"></div>
+</div></div>
+<div class="overlay" id="editOverlay"><div class="modal">
+  <h2>改客户</h2><div class="note" id="editWho" style="margin-bottom:6px"></div>
+  <label>套餐（改档位会套用该档默认容量）</label><select id="eTier"><option value="">不改</option><option value="basic">图床-基础</option><option value="pro">图床-专业</option></select>
+  <label>容量上限（GB，留空=不改）</label><input id="eGB" type="number" placeholder="如 5 / 50 / 100">
+  <label>到期日（留空=不改）</label><input id="eDate" type="date">
+  <div class="foot"><button id="editCancel">取消</button><button class="pri" id="editSave">保存</button></div>
+</div></div>
+<div class="overlay" id="confirmOverlay"><div class="modal">
+  <h2>请确认</h2><div class="note" id="confirmMsg" style="margin-bottom:14px"></div>
+  <div class="foot"><button id="confirmNo">取消</button><button class="pri danger" id="confirmYes">确认</button></div>
+</div></div>
+<div class="toast" id="toast"></div>
+<script>
+var AK=sessionStorage.getItem("tuku_ak")||"",LIST=[],editId=null,_cf=null;
+function $(id){return document.getElementById(id)}
+function show(id){$(id).classList.add("show")}
+function hide(id){$(id).classList.remove("show")}
+function toast(m){var t=$("toast");t.textContent=m;t.classList.add("show");setTimeout(function(){t.classList.remove("show")},2200)}
+function esc(s){return String(s==null?"":s).replace(/[<>&]/g,function(c){return c==="<"?"&lt;":c===">"?"&gt;":"&amp;"})}
+function api(p,o){o=o||{};o.headers=Object.assign({"x-admin-key":AK},o.headers||{});return fetch("/api/admin"+p,o).then(function(r){return r.json().then(function(d){if(r.status===401){sessionStorage.removeItem("tuku_ak");AK="";show("loginOverlay");throw new Error(d.error||"未授权")}if(!r.ok)throw new Error(d.error||("HTTP "+r.status));return d})})}
+function uiConfirm(m){return new Promise(function(res){$("confirmMsg").textContent=m;_cf=res;show("confirmOverlay")})}
+$("confirmYes").onclick=function(){hide("confirmOverlay");var r=_cf;_cf=null;if(r)r(true)};
+$("confirmNo").onclick=function(){hide("confirmOverlay");var r=_cf;_cf=null;if(r)r(false)};
+$("loginBtn").onclick=function(){AK=$("akey").value.trim();sessionStorage.setItem("tuku_ak",AK);hide("loginOverlay");$("loginErr").textContent="";load()};
+$("akey").addEventListener("keydown",function(e){if(e.key==="Enter")$("loginBtn").click()});
+$("logoutBtn").onclick=function(){sessionStorage.removeItem("tuku_ak");AK="";show("loginOverlay")};
+$("refreshBtn").onclick=function(){load()};
+$("editCancel").onclick=function(){hide("editOverlay")};
+$("editSave").onclick=doEdit;
+function load(){api("/customers").then(render).catch(function(e){var msg=e.message||"";if(msg.indexOf("授权")>=0||msg.indexOf("密钥")>=0){show("loginOverlay");$("loginErr").textContent=AK?"密钥不正确":""}else toast(msg)})}
+function render(d){
+  var s=d.stats;
+  $("stats").innerHTML=[["客户数",s.total],["活跃",s.active],["文件总数",s.totalFiles],["总用量",s.totalGB]].map(function(x){return "<div class='stat'><div class='num'>"+x[1]+"</div><div class='lbl'>"+x[0]+"</div></div>"}).join("");
+  LIST=d.customers;
+  $("rows").innerHTML=LIST.map(function(c,i){
+    var pct=c.byteLimit?Math.min(100,Math.round(c.usedBytes/c.byteLimit*100)):0;
+    var st=c.status!=="active"?"<span class='badge off'>已停服</span>":(c.expiresAt&&new Date(c.expiresAt)<new Date()?"<span class='badge exp'>已到期</span>":"<span class='badge on'>正常</span>");
+    return "<tr><td>"+c.id+"</td><td class='mono'>"+esc(c.card)+"</td>"+
+      "<td><span class='badge tier'>"+esc(c.tierLabel)+"</span></td>"+
+      "<td>"+c.usedGB+" / "+c.limitGB+"<div class='pbar'><i class='"+(pct>=100?"full":"")+"' style='width:"+pct+"%'></i></div></td>"+
+      "<td>"+c.files+"</td><td>"+(c.expiresAt?c.expiresAt.slice(0,10):"永久")+"</td><td>"+st+"</td>"+
+      "<td><div class='acts'><button class='sm' data-a='edit' data-i='"+i+"'>改</button>"+
+      (c.status==="active"?"<button class='sm danger' data-a='off' data-i='"+i+"'>停服</button>":"<button class='sm' data-a='on' data-i='"+i+"'>恢复</button>")+
+      "<button class='sm danger' data-a='del' data-i='"+i+"'>删除</button></div></td></tr>";
+  }).join("");
+}
+$("rows").addEventListener("click",function(e){
+  var b=e.target.closest?e.target.closest("button[data-a]"):null;if(!b)return;
+  var i=Number(b.getAttribute("data-i")),a=b.getAttribute("data-a");
+  if(a==="edit")openEdit(i);else if(a==="off")toggle(i,"disabled");else if(a==="on")toggle(i,"active");else if(a==="del")del(i);
+});
+function toggle(i,st){var c=LIST[i];api("/customers/"+c.id,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({status:st})}).then(function(){toast(st==="active"?"已恢复":"已停服");load()}).catch(function(e){toast(e.message)})}
+function del(i){var c=LIST[i];uiConfirm("确认删除客户 "+c.card+"？\\n他的所有文件("+c.files+"个)和记录都会被清除，不可恢复。").then(function(ok){if(!ok)return;api("/customers/"+c.id,{method:"DELETE"}).then(function(){toast("已删除");load()}).catch(function(e){toast(e.message)})})}
+function openEdit(i){var c=LIST[i];editId=c.id;$("editWho").textContent=c.card+"（"+c.tierLabel+"）";$("eTier").value="";$("eGB").value="";$("eDate").value=c.expiresAt?c.expiresAt.slice(0,10):"";show("editOverlay")}
+function doEdit(){
+  var body={},t=$("eTier").value,gb=$("eGB").value.trim(),dt=$("eDate").value;
+  if(t)body.tier=t;if(gb)body.byteLimit=Math.round(Number(gb)*1073741824);if(dt)body.expiresAt=dt+"T23:59:59";
+  if(!Object.keys(body).length){toast("没改动");return}
+  api("/customers/"+editId,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(function(){hide("editOverlay");toast("已保存");load()}).catch(function(e){toast(e.message)});
+}
+if(AK)load();else show("loginOverlay");
 </script></body></html>`;
