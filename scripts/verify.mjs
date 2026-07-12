@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 图床 tuku 部署前验证闸：文件存在 + 语法 + 账号绑定。纯本地，无网络。
 import { execSync } from "node:child_process";
-import { readFileSync, existsSync, statSync } from "node:fs";
+import { readFileSync, existsSync, statSync, writeFileSync, unlinkSync } from "node:fs";
 
 const EXPECT_ACCOUNT = "2e7307f9e8cd602d0396fc1f4ef532c9"; // Hannah
 let failed = 0;
@@ -23,6 +23,31 @@ if (existsSync("index.js")) {
   const kb = statSync("index.js").size / 1024;
   if (kb < 3) fail("index.js 疑似被截断 (" + kb.toFixed(1) + "KB)");
   else ok("index.js 体积正常 (" + kb.toFixed(1) + "KB)");
+}
+
+// 前端模板转义坑：PAGE_HTML/ADMIN_HTML 是反引号模板，下发时才求值(\/ \n \" 等会被处理)。
+// 直接 node --check index.js 查不出前端 JS 的语法错，必须求值出“实际下发”的 <script> 再检查。
+try {
+  const src = readFileSync("index.js", "utf8");
+  for (const name of ["PAGE_HTML", "ADMIN_HTML"]) {
+    const marker = "const " + name + " = `";
+    const m = src.indexOf(marker);
+    if (m < 0) continue;
+    const s = m + marker.length;
+    const e = src.indexOf("`", s);
+    const content = src.slice(s, e);
+    if (content.includes("${") || content.includes("`")) { console.warn("⚠ 跳过 " + name + " 前端求值检查(含 ${ 或反引号，无法安全求值)"); continue; }
+    const html = eval("`" + content + "`"); // 复现下发时的转义处理
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((x) => x[1]).join("\n;\n");
+    if (!scripts.trim()) continue;
+    const tmp = ".verify_" + name + ".js";
+    writeFileSync(tmp, scripts);
+    try { execSync("node --check " + tmp, { stdio: "pipe" }); ok(name + " 前端下发脚本语法通过"); }
+    catch (err) { fail(name + " 前端下发脚本语法错误(求值后):\n" + (err.stderr ? err.stderr.toString() : err.message)); }
+    finally { try { unlinkSync(tmp); } catch (e) {} }
+  }
+} catch (e) {
+  console.warn("⚠ 前端求值检查未执行: " + e.message);
 }
 
 if (existsSync("wrangler.jsonc")) {

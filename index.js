@@ -117,12 +117,21 @@ function bearer(request) {
 }
 
 /* ---------- CF Images / 畅密 ---------- */
+// 带超时的 fetch：上游(畅密/CF Images)慢响应时不拖垮整个请求到 Worker 上限
+async function fetchT(url, init, ms) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms || 8000);
+  try { return await fetch(url, { ...(init || {}), signal: ctl.signal }); }
+  finally { clearTimeout(t); }
+}
 function imagesBase(env) {
   return "https://api.cloudflare.com/client/v4/accounts/" + (env.ACCOUNT_ID) + "/images/v1";
 }
 async function imagesApi(env, path, init = {}) {
   const headers = { authorization: "Bearer " + env.CF_IMAGES_TOKEN, ...(init.headers || {}) };
-  const res = await fetch(imagesBase(env) + path, { ...init, headers });
+  let res;
+  try { res = await fetchT(imagesBase(env) + path, { ...init, headers }, 20000); }
+  catch (e) { return { success: false, errors: [{ message: "图片服务超时，请重试" }] }; }
   const data = await res.json().catch(() => ({ success: false, errors: [{ message: "Images API invalid JSON" }] }));
   if (!res.ok && data.success !== false) data.success = false;
   return data;
@@ -130,13 +139,17 @@ async function imagesApi(env, path, init = {}) {
 // 调畅密验卡：返回 { valid, status, expires_at?, duration_days? }
 async function changmiVerify(env, card, appKey) {
   if (!appKey) return { valid: false, status: 0 };
-  const res = await fetch(env.CHANGMI_URL.replace(/\/+$/, "") + "/api/verify", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ code: card, app_key: appKey }),
-  });
-  const data = await res.json().catch(() => ({}));
-  return { valid: res.ok && data.valid === true, status: res.status, expires_at: data.expires_at, duration_days: data.duration_days };
+  try {
+    const res = await fetchT(env.CHANGMI_URL.replace(/\/+$/, "") + "/api/verify", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: card, app_key: appKey }),
+    }, 8000);
+    const data = await res.json().catch(() => ({}));
+    return { valid: res.ok && data.valid === true, status: res.status, expires_at: data.expires_at, duration_days: data.duration_days };
+  } catch (e) {
+    return { valid: false, status: 0 };
+  }
 }
 
 /* ---------- 客户（D1） ---------- */
@@ -175,12 +188,12 @@ async function handleLogin(request, env) {
   const card = normCard(body.card);
   const password = String(body.password || "");
   if (!card || !password) return json({ error: "请输入卡号和密码" }, 400);
-  if (password.length < 4) return json({ error: "密码至少 4 位" }, 400);
 
   const existing = await getCustomerByCard(env, card);
   if (existing) {
     if (!customerActive(existing)) return json({ error: "账号已停用或到期" }, 403);
-    if (!(await verifyPassword(password, existing.password_hash))) return json({ error: "密码不正确" }, 401);
+    // 防账号枚举：密码错与卡号未开通/无效，返回同一文案与状态码
+    if (!(await verifyPassword(password, existing.password_hash))) return json({ error: "卡号或密码不正确" }, 401);
     const token = await signSession(env, existing.id, card);
     return json({ ok: true, token, tier: existing.tier });
   }
@@ -189,13 +202,15 @@ async function handleLogin(request, env) {
   let tier = null, expiresAt = null;
   const basic = await changmiVerify(env, card, env.APP_KEY_TU_BASIC);
   if (basic.valid) { tier = "basic"; expiresAt = basic.expires_at || null; }
-  else if (basic.status !== 404 && basic.status !== 0) return json({ error: "卡密无效" }, 400);
+  else if (basic.status !== 404 && basic.status !== 0) return json({ error: "卡号或密码不正确" }, 401);
   else {
     const pro = await changmiVerify(env, card, env.APP_KEY_TU_PRO);
     if (pro.valid) { tier = "pro"; expiresAt = pro.expires_at || null; }
-    else return json({ error: "卡密无效" }, 400);
+    else return json({ error: "卡号或密码不正确" }, 401);
   }
 
+  // 密码强度只在“开通=设密码”时要求，且只在卡有效后才提示（避免拿弱口令探测卡是否已开通）
+  if (password.length < 8) return json({ error: "首次开通请设至少 8 位密码" }, 400);
   const preset = TIERS[tier];
   const now = Math.floor(Date.now() / 1000);
   const pwHash = await hashPassword(password);
@@ -254,6 +269,12 @@ async function handleUpload(request, env, customer) {
     const ins = await env.DB.prepare(
       "INSERT INTO images (customer_id, album_id, kind, cf_id, r2_key, filename, mime, bytes, uploaded_at) VALUES (?,?,'file','',?,?,?,?,?)"
     ).bind(customer.id, albumId, key, file.name || "file", file.type || "application/octet-stream", file.size, now).run();
+    // 并发 TOCTOU 兜底：入库后复核，超限则回滚（删对象+删行）
+    if ((await usedBytesOf(env, customer.id)) > customer.byte_limit) {
+      try { await env.R2.delete(key); } catch (e) {}
+      await env.DB.prepare("DELETE FROM images WHERE id=? AND customer_id=?").bind(ins.meta.last_row_id, customer.id).run();
+      return json({ error: "容量不足（上限 " + fmtGB(customer.byte_limit) + "），请删文件或升级" }, 402);
+    }
     return json({
       ok: true, id: ins.meta.last_row_id, kind: "file", filename: file.name || "file",
       link: await fileLink(env, ins.meta.last_row_id),
@@ -310,10 +331,18 @@ async function handleMpuComplete(request, env, customer) {
     const a = await env.DB.prepare("SELECT id FROM albums WHERE id=? AND customer_id=?").bind(albumId, customer.id).first();
     if (!a) albumId = null;
   }
+  // 安全：以 R2 实际大小为准（防客户端申报 size 造假绕配额），并复核容量，超限则删对象回滚
+  let realSize = Number(body.size) || 0;
+  try { const head = await env.R2.head(key); if (head && Number.isFinite(head.size)) realSize = head.size; } catch (e) { /* 退回申报值 */ }
+  const usedBytes = await usedBytesOf(env, customer.id);
+  if (usedBytes + realSize > customer.byte_limit) {
+    try { await env.R2.delete(key); } catch (e) { console.log("mpu over-quota rollback fail: " + key); }
+    return json({ error: "容量不足（上限 " + fmtGB(customer.byte_limit) + "，已用 " + fmtGB(usedBytes) + "）" }, 402);
+  }
   const now = Math.floor(Date.now() / 1000);
   const ins = await env.DB.prepare(
     "INSERT INTO images (customer_id, album_id, kind, cf_id, r2_key, filename, mime, bytes, uploaded_at) VALUES (?,?,'file','',?,?,?,?,?)"
-  ).bind(customer.id, albumId, key, String(body.filename || "file"), String(body.mime || "application/octet-stream"), Number(body.size) || 0, now).run();
+  ).bind(customer.id, albumId, key, String(body.filename || "file"), String(body.mime || "application/octet-stream"), realSize, now).run();
   return json({ ok: true, id: ins.meta.last_row_id, kind: "file", link: await fileLink(env, ins.meta.last_row_id) });
 }
 
@@ -399,7 +428,7 @@ async function handleMe(request, env, customer) {
 
 /* ---------- 图片直链 /i/:cf_id（公开，代理 imagedelivery，隐藏账户哈希 + 缓存） ---------- */
 async function serveImage(request, env, cfId) {
-  const variant = new URL(request.url).searchParams.get("v") === "thumb" ? "public" : "public";
+  const variant = "public";
   const cacheKey = new Request(new URL(request.url).origin + "/i/" + cfId, request);
   const cached = await caches.default.match(cacheKey);
   if (cached) return cached;
@@ -882,7 +911,7 @@ function $(id){return document.getElementById(id)}
 function show(id){$(id).classList.add("show")}
 function hide(id){$(id).classList.remove("show")}
 function toast(m){var t=$("toast");t.textContent=m;t.classList.add("show");setTimeout(function(){t.classList.remove("show")},2200)}
-function esc(s){return String(s==null?"":s).replace(/[<>&]/g,function(c){return c==="<"?"&lt;":c===">"?"&gt;":"&amp;"})}
+function esc(s){return String(s==null?"":s).replace(/[<>&"']/g,function(c){return c==="<"?"&lt;":c===">"?"&gt;":c==="&"?"&amp;":c==='"'?"&quot;":"&#39;"})}
 function fmtSize(b){b=Number(b)||0;if(b<1024)return b+" B";if(b<1048576)return (b/1024).toFixed(1)+" KB";if(b<1073741824)return (b/1048576).toFixed(1)+" MB";return (b/1073741824).toFixed(2)+" GB"}
 function relTime(t){t=Number(t);if(!t)return"";if(t>1e12)t=Math.floor(t/1000);var s=Math.floor(Date.now()/1000)-t;if(s<0)s=0;if(s<60)return"刚刚";if(s<3600)return Math.floor(s/60)+" 分钟前";if(s<86400)return Math.floor(s/3600)+" 小时前";if(s<2592000)return Math.floor(s/86400)+" 天前";var d=new Date(t*1000);return (d.getMonth()+1)+"-"+d.getDate()}
 function typeOf(im){if(im.kind==="image")return"image";var m=String(im.mime||"");if(m.indexOf("video")===0)return"video";if(m.indexOf("audio")===0)return"audio";if(m.indexOf("pdf")>=0||m.indexOf("text")===0||m.indexOf("word")>=0||m.indexOf("document")>=0||m.indexOf("sheet")>=0||m.indexOf("presentation")>=0)return"doc";if(/zip|rar|7z|compress|tar|gzip/.test(m))return"zip";return"other"}
@@ -1386,7 +1415,7 @@ function $(id){return document.getElementById(id)}
 function show(id){$(id).classList.add("show")}
 function hide(id){$(id).classList.remove("show")}
 function toast(m){var t=$("toast");t.textContent=m;t.classList.add("show");setTimeout(function(){t.classList.remove("show")},2200)}
-function esc(s){return String(s==null?"":s).replace(/[<>&]/g,function(c){return c==="<"?"&lt;":c===">"?"&gt;":"&amp;"})}
+function esc(s){return String(s==null?"":s).replace(/[<>&"']/g,function(c){return c==="<"?"&lt;":c===">"?"&gt;":c==="&"?"&amp;":c==='"'?"&quot;":"&#39;"})}
 function fmtSize(b){b=Number(b)||0;if(b<1024)return b+" B";if(b<1048576)return (b/1024).toFixed(1)+" KB";if(b<1073741824)return (b/1048576).toFixed(1)+" MB";return (b/1073741824).toFixed(2)+" GB"}
 function api(p,o){o=o||{};o.headers=Object.assign({"x-admin-key":AK},o.headers||{});return fetch("/api/admin"+p,o).then(function(r){return r.json().then(function(d){if(r.status===401){sessionStorage.removeItem("tuku_ak");AK="";show("loginOverlay");throw new Error(d.error||"未授权")}if(!r.ok)throw new Error(d.error||("HTTP "+r.status));return d})})}
 function uiConfirm(m){return new Promise(function(res){$("confirmMsg").textContent=m;_cf=res;show("confirmOverlay")})}
