@@ -103,11 +103,19 @@ async function setConf(env, key, value) {
   await env.DB.prepare("INSERT INTO config (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(key, value).run();
 }
 async function isInitialized(env) { return !!(await getConf(env, "owner_hash")); }
-// 会话/直链签名串：优先用 secret，其次 D1 里存的（首次自动生成）
+// 会话/直链签名串：优先用 secret，其次 D1 里存的（首次自动生成）。
+// 注意：本函数在每个请求（含 /health、未初始化时）都会跑，全新库里 config 表还没建，
+// 必须先确保表存在再写，且任何失败都不能让请求崩（否则整个 Worker 1101）。
 async function secretOf(env) {
   if (env.SESSION_SECRET) return env.SESSION_SECRET;
   let s = await getConf(env, "session_secret");
-  if (!s) { s = b64u(crypto.getRandomValues(new Uint8Array(32))); await setConf(env, "session_secret", s); }
+  if (!s) {
+    s = b64u(crypto.getRandomValues(new Uint8Array(32)));
+    try {
+      await env.DB.prepare("CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)").run();
+      await setConf(env, "session_secret", s);
+    } catch (e) { /* 建表/写入失败也返回临时串，不崩；初始化后会持久化 */ }
+  }
   return s;
 }
 
