@@ -131,7 +131,8 @@ async function verifySession(secret, token) {
 }
 function bearer(request) { const h = request.headers.get("authorization") || ""; return h.startsWith("Bearer ") ? h.slice(7).trim() : ""; }
 async function fileToken(secret, id) { return b64u(await hmac(secret, "file:" + id)).slice(0, 24); }
-async function fileLink(env, secret, id) { return (env.PUBLIC_BASE || "") + "/f/" + id + "~" + (await fileToken(secret, id)); }
+// base = PUBLIC_BASE 配了就用它，否则用本次请求的 origin（*.workers.dev 默认可用，直链可分享）
+async function fileLink(base, secret, id) { return base + "/f/" + id + "~" + (await fileToken(secret, id)); }
 function imgThumbLink(link) { return link + (link.indexOf("?") >= 0 ? "&" : "?") + "thumb=1"; }
 
 /* ---------- 登录鉴权中间件（单 owner） ---------- */
@@ -209,7 +210,7 @@ async function storeUpload(env, file, albumId, thumb) {
     return { error: "上传失败，请重试", status: 502 };
   }
 }
-async function handleUpload(request, env, secret) {
+async function handleUpload(request, env, secret, base) {
   const form = await request.formData();
   const file = form.get("file");
   if (!file || typeof file === "string") return json({ error: "缺少文件" }, 400);
@@ -218,7 +219,7 @@ async function handleUpload(request, env, secret) {
   const thumb = form.get("thumb");
   const r = await storeUpload(env, file, albumId, thumb);
   if (r.error) return json({ error: r.error }, r.status || 400);
-  const link = await fileLink(env, secret, r.record.id);
+  const link = await fileLink(base, secret, r.record.id);
   return json({ ok: true, id: r.record.id, kind: r.record.kind, filename: r.record.filename, link, thumb: r.record.has_thumb ? imgThumbLink(link) : (r.record.kind === "image" ? link : null) });
 }
 
@@ -246,7 +247,7 @@ async function handleMpuPart(request, env, url) {
     return json({ ok: true, part: part.partNumber, etag: part.etag });
   } catch (e) { console.log("mpu part fail: " + (e && e.message ? e.message : e)); return json({ error: "分片上传失败" }, 502); }
 }
-async function handleMpuComplete(request, env, secret) {
+async function handleMpuComplete(request, env, secret, base) {
   const body = await request.json().catch(() => ({}));
   const key = String(body.key || "");
   const uploadId = String(body.uploadId || "");
@@ -268,19 +269,19 @@ async function handleMpuComplete(request, env, secret) {
   const ins = await env.DB.prepare(
     "INSERT INTO files (album_id, kind, r2_key, has_thumb, mime, filename, bytes, uploaded_at) VALUES (?,?,?,0,?,?,?,?)"
   ).bind(albumId, mime.startsWith("image/") ? "image" : "file", key, mime, String(body.filename || "file"), realSize, now).run();
-  const link = await fileLink(env, secret, ins.meta.last_row_id);
+  const link = await fileLink(base, secret, ins.meta.last_row_id);
   return json({ ok: true, id: ins.meta.last_row_id, kind: mime.startsWith("image/") ? "image" : "file", link });
 }
 
 /* ---------- 列表 / 删除 / 相册 ---------- */
-async function handleList(env, secret, url) {
+async function handleList(env, secret, url, base) {
   const albumParam = url.searchParams.get("album_id");
   let rows;
   if (albumParam === "none") rows = await env.DB.prepare("SELECT * FROM files WHERE album_id IS NULL ORDER BY id DESC LIMIT 1000").all();
   else if (albumParam) rows = await env.DB.prepare("SELECT * FROM files WHERE album_id=? ORDER BY id DESC LIMIT 1000").bind(Number(albumParam)).all();
   else rows = await env.DB.prepare("SELECT * FROM files ORDER BY id DESC LIMIT 1000").all();
   const images = await Promise.all((rows.results || []).map(async (im) => {
-    const link = await fileLink(env, secret, im.id);
+    const link = await fileLink(base, secret, im.id);
     return {
       id: im.id, kind: im.kind === "image" ? "image" : "file", filename: im.filename, mime: im.mime, bytes: im.bytes,
       album_id: im.album_id, uploaded_at: im.uploaded_at, link,
@@ -407,6 +408,7 @@ export default {
     const path = url.pathname;
     request.__ctx = ctx;
     const secret = await secretOf(env);
+    const base = env.PUBLIC_BASE || url.origin; // 直链基址：配了 PUBLIC_BASE 用它，否则用本次请求 origin
 
     if (path === "/health") return json({ ok: true, service: "cloud-solo", version: VERSION });
     if (path === "/" || path === "/index.html") return htmlResponse((await isInitialized(env)) ? PAGE_HTML : SETUP_HTML, env);
@@ -435,11 +437,11 @@ export default {
       if (auth.error) return auth.error;
 
       if (request.method === "GET" && path === "/api/me") return handleMe(env);
-      if (request.method === "POST" && path === "/api/upload") return await handleUpload(request, env, secret);
+      if (request.method === "POST" && path === "/api/upload") return await handleUpload(request, env, secret, base);
       if (request.method === "POST" && path === "/api/mpu/create") return await handleMpuCreate(request, env);
       if (request.method === "POST" && path === "/api/mpu/part") return await handleMpuPart(request, env, url);
-      if (request.method === "POST" && path === "/api/mpu/complete") return await handleMpuComplete(request, env, secret);
-      if (request.method === "GET" && path === "/api/list") return handleList(env, secret, url);
+      if (request.method === "POST" && path === "/api/mpu/complete") return await handleMpuComplete(request, env, secret, base);
+      if (request.method === "GET" && path === "/api/list") return handleList(env, secret, url, base);
       if (request.method === "GET" && path === "/api/albums") return handleAlbums(env);
       if (request.method === "POST" && path === "/api/albums") return handleCreateAlbum(request, env);
 
