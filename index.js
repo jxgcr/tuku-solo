@@ -888,7 +888,7 @@ function uploadFiles(files){files=Array.prototype.slice.call(files||[]);if(!file
   var head=document.createElement("div");head.style.cssText="display:flex;gap:8px;align-items:center;position:sticky;top:0;background:#0b0d15;padding:8px 2px;z-index:2;flex-wrap:wrap;margin-bottom:6px";
   var leftTxt=document.createElement("span");leftTxt.className="muted";leftTxt.style.marginRight="auto";head.appendChild(leftTxt);
   var pauseAll=mkbtn("⏸ 全部暂停","pbtn",function(){batchPaused=!batchPaused;pauseAll.textContent=batchPaused?"▶ 全部继续":"⏸ 全部暂停";actives.forEach(function(c){c.paused=batchPaused})});
-  var cancelAll=mkbtn("✕ 全部取消","pbtn del",function(){if(!confirm("取消所有还没完成的上传？"))return;batchCanceled=true;actives.forEach(function(c){c.canceled=true;if(c.abort)c.abort()})});
+  var cancelAll=mkbtn("✕ 全部取消","pbtn del",function(){if(!confirm("取消并清空所有还没完成的上传？"))return;batchCanceled=true;actives.forEach(function(c){c.canceled=true;if(c.abort)c.abort()});var its=pc.querySelectorAll(".pitem");for(var i=0;i<its.length;i++)its[i].remove();updProgress();releaseWake();pc.classList.add("hide")});
   head.appendChild(pauseAll);head.appendChild(cancelAll);
   var obar=document.createElement("div");obar.style.cssText="flex:1 0 100%;height:6px;background:rgba(255,255,255,.1);border-radius:3px;overflow:hidden";var obi=document.createElement("i");obi.style.cssText="display:block;height:100%;width:0;background:linear-gradient(90deg,#6d5efc,#a855f7);transition:width .25s";obar.appendChild(obi);head.appendChild(obar);
   pc.appendChild(head);
