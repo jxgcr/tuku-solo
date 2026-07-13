@@ -905,7 +905,7 @@ $("goUpload").addEventListener("click",function(){navTo({view:"upload"})});$("re
 $("logoutBtn").addEventListener("click",logout);$("delAlbumBtn").addEventListener("click",function(){if(NAV.album!=null)delAlbum(NAV.album)});
 $("q").addEventListener("input",function(){Q=this.value;renderFiles()});$("sort").addEventListener("change",function(){SORT=this.value;renderFiles()});
 function toggleSelectAll(){var arr=currentList();var allSel=arr.length>0&&arr.every(function(x){return SEL[x.id]});if(allSel){clearSel()}else{arr.forEach(function(x){SEL[x.id]=true});updateSelUI();renderFiles()}}
-function copySel(){var arr=ALLFILES.filter(function(x){return SEL[x.id]});if(!arr.length)return;var txt=arr.map(function(x){return x.link}).join("\n");navigator.clipboard.writeText(txt).then(function(){toast("已复制 "+arr.length+" 个链接")}).catch(function(){toast("复制失败")})}
+function copySel(){var arr=ALLFILES.filter(function(x){return SEL[x.id]});if(!arr.length)return;var txt=arr.map(function(x){return x.link}).join(String.fromCharCode(10));navigator.clipboard.writeText(txt).then(function(){toast("已复制 "+arr.length+" 个链接")}).catch(function(){toast("复制失败")})}
 $("btnAll").onclick=toggleSelectAll;$("bCopy").onclick=copySel;
 $("bDown").onclick=downloadSel;$("bDel").onclick=function(){delItems(selIds())};$("bCancel").onclick=clearSel;
 $("burger").addEventListener("click",openDrawer);$("sideClose").addEventListener("click",closeDrawer);$("scrim").addEventListener("click",closeDrawer);
