@@ -816,8 +816,9 @@ function delItems(ids){if(!ids.length)return;if(!confirm("删除选中的 "+ids.
 function reloadFiles(){return Promise.all([loadFiles(),loadAlbums()]).then(function(){renderNav();renderFiles();loadMe();renderCatBars()})}
 function newAlbum(){var name=prompt("相册名字");if(!name)return;api("/api/albums",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name:name})}).then(function(){return loadAlbums()}).then(function(){renderNav();toast("已新建相册")}).catch(function(e){toast(e.message)})}
 function delAlbum(id){if(!confirm("删除相册？里面的文件会变成未分组，不会删文件。"))return;api("/api/albums/"+id,{method:"DELETE"}).then(function(){return loadAlbums()}).then(function(){navTo({type:"all"})}).catch(function(e){toast(e.message)})}
-function openSettings(){var b=$("setBody");b.innerHTML="";closeDrawer();
+function openSettings(){var b=$("setBody");b.innerHTML="<div class='muted' style='padding:10px 0'>加载中…</div>";closeDrawer();show("setOverlay");
   api("/api/me").then(function(d){
+    b.innerHTML="";
     var row=function(k,v){var x=document.createElement("div");x.className="info";x.style.borderBottom="1px solid var(--line)";x.innerHTML="<span class='il'>"+k+"</span><span>"+v+"</span>";b.appendChild(x)};
     row("已用",esc(fmtSize(d.usedBytes)+" / "+fmtSize(d.byteLimit)));
     var gbNow=(d.byteLimit/1073741824).toFixed(1);
@@ -826,7 +827,7 @@ function openSettings(){var b=$("setBody");b.innerHTML="";closeDrawer();
     row("文件数",esc(String(d.count)));row("隐私","🔒 仅你可见");
     var links=document.createElement("div");links.className="muted";links.style.cssText="margin-top:14px;text-align:center";links.innerHTML="<a href='/privacy' target='_blank' style='color:var(--mut)'>隐私政策</a> · <a href='/terms' target='_blank' style='color:var(--mut)'>服务条款</a>";b.appendChild(links);
     $("btnLimit").onclick=function(){openLimitEditor(d)};
-  }).catch(function(){});show("setOverlay");
+  }).catch(function(e){b.innerHTML="<div class='muted' style='padding:10px 0'>加载失败："+esc(e&&e.message?e.message:"网络错误")+"</div>"});
 }
 function openLimitEditor(d){var b=$("setBody");b.innerHTML="";
   var box=document.createElement("div");
