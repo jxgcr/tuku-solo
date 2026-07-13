@@ -683,6 +683,7 @@ const PAGE_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"
           <span class="ftitle" id="ftitle">全部文件</span>
           <div class="srch"><span>🔍</span><input id="q" placeholder="搜索文件名"></div>
           <select id="sort"><option value="new">最新</option><option value="old">最早</option><option value="big">最大</option><option value="name">名称</option></select>
+          <button id="btnAll" class="sm">☑ 全选</button>
           <button id="delAlbumBtn" class="sm danger hide">删除相册</button>
         </div>
         <div class="grid" id="grid"></div>
@@ -692,7 +693,7 @@ const PAGE_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"
   </div>
 </div>
 
-<div class="batch" id="batch"><span>已选 <b id="selN">0</b></span><span class="bd"></span><button id="bDown">⬇ 下载</button><button id="bDel" class="danger">🗑 删除</button><button id="bCancel">取消</button></div>
+<div class="batch" id="batch"><span>已选 <b id="selN">0</b></span><span class="bd"></span><button id="bCopy">🔗 复制</button><button id="bDown">⬇ 下载</button><button id="bDel" class="danger">🗑 删除</button><button id="bCancel">取消</button></div>
 <div class="lb" id="lightbox"><span class="x" id="lbClose">✕</span><span class="nav prev" id="lbPrev">‹</span><img id="lbImg" src="" alt=""><span class="nav next" id="lbNext">›</span></div>
 <div class="overlay" id="menuOverlay"><div class="modal"><h3 id="mTitle">操作</h3><div class="acts" id="mActs"></div></div></div>
 <div class="overlay" id="detailOverlay"><div class="modal"><h3>详细信息</h3><div id="dBody"></div><div class="foot"><button id="dClose">关闭</button></div></div></div>
@@ -903,6 +904,9 @@ $("moveCancel").onclick=function(){hide("moveOverlay")};$("setClose").onclick=fu
 $("goUpload").addEventListener("click",function(){navTo({view:"upload"})});$("recMore").addEventListener("click",function(){navTo({type:"all"})});
 $("logoutBtn").addEventListener("click",logout);$("delAlbumBtn").addEventListener("click",function(){if(NAV.album!=null)delAlbum(NAV.album)});
 $("q").addEventListener("input",function(){Q=this.value;renderFiles()});$("sort").addEventListener("change",function(){SORT=this.value;renderFiles()});
+function toggleSelectAll(){var arr=currentList();var allSel=arr.length>0&&arr.every(function(x){return SEL[x.id]});if(allSel){clearSel()}else{arr.forEach(function(x){SEL[x.id]=true});updateSelUI();renderFiles()}}
+function copySel(){var arr=ALLFILES.filter(function(x){return SEL[x.id]});if(!arr.length)return;var txt=arr.map(function(x){return x.link}).join("\n");navigator.clipboard.writeText(txt).then(function(){toast("已复制 "+arr.length+" 个链接")}).catch(function(){toast("复制失败")})}
+$("btnAll").onclick=toggleSelectAll;$("bCopy").onclick=copySel;
 $("bDown").onclick=downloadSel;$("bDel").onclick=function(){delItems(selIds())};$("bCancel").onclick=clearSel;
 $("burger").addEventListener("click",openDrawer);$("sideClose").addEventListener("click",closeDrawer);$("scrim").addEventListener("click",closeDrawer);
 function openDrawer(){$("side").classList.add("open");$("scrim").classList.add("show")}function closeDrawer(){$("side").classList.remove("open");$("scrim").classList.remove("show")}
