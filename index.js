@@ -869,17 +869,26 @@ function multipartUpload(file,albumId,onprog,ctrl){var CHUNK=40*1024*1024,sig=fi
   }).then(function(){return api("/api/mpu/complete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({key:st.key,uploadId:st.uploadId,parts:st.parts,filename:file.name,mime:file.type||"application/octet-stream",size:file.size,album_id:albumId})})}).then(function(r){mpuClear(sig);return r});
 }
 function uploadFiles(files){files=Array.prototype.slice.call(files||[]);if(!files.length)return;navTo({view:"upload"});var pc=$("progress");pc.classList.remove("hide");pc.innerHTML="";var doCompress=$("cmp").checked,albumId=(NAV.album!=null&&NAV.type==null)?NAV.album:null,done=0,fail=0,canceled=0;
-  var runOne=function(i){if(i>=files.length){toast("完成 "+done+" 个"+(fail?("，失败 "+fail):"")+(canceled?("，取消 "+canceled):""));reloadFiles();setTimeout(function(){if(!fail&&!canceled)pc.classList.add("hide")},1600);return}
-    var f=files[i],ctrl={canceled:false,paused:false,abort:null};
-    var item=document.createElement("div");item.className="pitem";item.innerHTML="<div class='pn'><span>"+esc(f.name)+"</span><span class='pct'>0%</span></div><div class='pbar'><i></i></div><div class='pacts'></div>";pc.appendChild(item);
-    var bar=item.querySelector("i"),pct=item.querySelector(".pct"),acts=item.querySelector(".pacts");
-    var cancelBtn=document.createElement("button");cancelBtn.className="pbtn del";cancelBtn.textContent="✕ 取消";cancelBtn.onclick=function(){ctrl.canceled=true;if(ctrl.abort)ctrl.abort()};acts.appendChild(cancelBtn);
-    (doCompress?compressImage(f):Promise.resolve(f)).then(function(uf){if(ctrl.canceled)throw new Error("已取消");
+  function mkbtn(txt,cls,fn){var b=document.createElement("button");b.className=cls;b.textContent=txt;b.onclick=fn;return b}
+  function failButtons(f,item,acts){acts.appendChild(mkbtn("🔄 重试","pbtn",function(){attempt(f,item).then(function(){reloadFiles()}).catch(function(){})}));acts.appendChild(mkbtn("🗑 移除","pbtn del",function(){item.remove()}))}
+  function attempt(f,item){
+    item.className="pitem";var bar=item.querySelector("i"),pct=item.querySelector(".pct"),acts=item.querySelector(".pacts");bar.style.width="0%";pct.textContent="0%";acts.innerHTML="";
+    var ctrl={canceled:false,paused:false,abort:null};
+    var cancelBtn=mkbtn("✕ 取消","pbtn del",function(){ctrl.canceled=true;if(ctrl.abort)ctrl.abort()});acts.appendChild(cancelBtn);
+    return (doCompress?compressImage(f):Promise.resolve(f)).then(function(uf){if(ctrl.canceled)throw new Error("已取消");
       var prog=function(p){if(ctrl.paused)return;var v=Math.round(p*100);bar.style.width=v+"%";pct.textContent=v+"%"};var big=uf.size>90*1024*1024;
-      if(big){var pauseBtn=document.createElement("button");pauseBtn.className="pbtn";pauseBtn.textContent="⏸ 暂停";pauseBtn.onclick=function(){ctrl.paused=!ctrl.paused;pauseBtn.textContent=ctrl.paused?"▶ 继续":"⏸ 暂停";item.classList.toggle("paused",ctrl.paused);if(ctrl.paused)pct.textContent="已暂停"};acts.insertBefore(pauseBtn,cancelBtn);return multipartUpload(uf,albumId,prog,ctrl)}
+      if(big){var pauseBtn=mkbtn("⏸ 暂停","pbtn",function(){ctrl.paused=!ctrl.paused;pauseBtn.textContent=ctrl.paused?"▶ 继续":"⏸ 暂停";item.classList.toggle("paused",ctrl.paused);if(ctrl.paused)pct.textContent="已暂停"});acts.insertBefore(pauseBtn,cancelBtn);return multipartUpload(uf,albumId,prog,ctrl)}
       return makeThumb(uf).then(function(th){return xhrUpload(uf,th,albumId,prog,ctrl)});
-    }).then(function(){done++;item.classList.add("done");pct.textContent="完成";acts.innerHTML=""}).catch(function(e){if(ctrl.canceled||/已取消/.test(e.message||"")){canceled++;item.classList.add("canceled");pct.textContent="已取消";acts.innerHTML=""}else{fail++;item.classList.add("err");pct.textContent=e.message;acts.innerHTML=""}}).then(function(){runOne(i+1)});
-  };toast("上传中…");runOne(0);
+    }).then(function(){item.classList.add("done");pct.textContent="完成";acts.innerHTML=""}).catch(function(e){
+      if(ctrl.canceled||/已取消/.test(e.message||"")){item.classList.add("canceled");pct.textContent="已取消";acts.innerHTML="";failButtons(f,item,acts);throw{canceled:true}}
+      item.classList.add("err");pct.textContent=(e&&e.message)||"上传失败";acts.innerHTML="";failButtons(f,item,acts);throw{failed:true};
+    });
+  }
+  function runOne(i){if(i>=files.length){toast("完成 "+done+" 个"+(fail?("，失败 "+fail+"（可在下方逐个重试）"):"")+(canceled?("，取消 "+canceled):""));reloadFiles();setTimeout(function(){if(!fail&&!canceled)pc.classList.add("hide")},1600);return}
+    var f=files[i];var item=document.createElement("div");item.className="pitem";item.innerHTML="<div class='pn'><span>"+esc(f.name)+"</span><span class='pct'>0%</span></div><div class='pbar'><i></i></div><div class='pacts'></div>";pc.appendChild(item);
+    attempt(f,item).then(function(){done++}).catch(function(x){if(x&&x.canceled)canceled++;else fail++}).then(function(){runOne(i+1)});
+  }
+  toast("上传中…");runOne(0);
 }
 function openLightbox(im){var imgs=currentList().filter(function(x){return x.kind==="image"});LB=imgs;LBI=0;for(var k=0;k<LB.length;k++){if(LB[k].id===im.id){LBI=k;break}}if(!LB.length)return;$("lbImg").src=LB[LBI].link;show("lightbox")}
 function openLightboxAll(im){var imgs=ALLFILES.filter(function(x){return x.kind==="image"});LB=imgs;LBI=0;for(var k=0;k<LB.length;k++){if(LB[k].id===im.id){LBI=k;break}}if(!LB.length)return;$("lbImg").src=LB[LBI].link;show("lightbox")}
