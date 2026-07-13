@@ -673,7 +673,7 @@ const PAGE_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"
         </div>
       </div>
       <div id="view-upload" class="view hide">
-        <div class="setbar"><label class="chk"><input type="checkbox" id="cmp" checked> 图片上传前压缩（省空间/更快）</label></div>
+        <div class="setbar"><label class="chk"><input type="checkbox" id="cmp"> 压缩图片省空间（默认保留原图；勾选则压缩，画质略降但更省空间）</label></div>
         <div class="drop" id="drop"><div class="dropico">☁️</div><div style="font-size:1.05rem;color:var(--ink)"><b>拖文件到这里</b>，或点击选择</div><div class="muted" style="margin-top:6px">图片 / 视频 / 音频 / PDF / 压缩包… 可多选</div><input id="file" type="file" multiple class="hide"></div>
         <div id="progress" class="prog hide"></div>
         <div class="muted" style="font-size:.82rem">大文件自动分片直传；也可直接 <b>Ctrl+V</b> 粘贴图片上传。</div>
