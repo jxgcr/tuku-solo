@@ -696,6 +696,7 @@ const PAGE_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"
 <div class="batch" id="batch"><span>已选 <b id="selN">0</b></span><span class="bd"></span><button id="bCopy">🔗 复制</button><button id="bDown">⬇ 下载</button><button id="bDel" class="danger">🗑 删除</button><button id="bCancel">取消</button></div>
 <div class="lb" id="lightbox"><span class="x" id="lbClose">✕</span><span class="nav prev" id="lbPrev">‹</span><img id="lbImg" src="" alt=""><span class="nav next" id="lbNext">›</span></div>
 <div class="overlay" id="menuOverlay"><div class="modal"><h3 id="mTitle">操作</h3><div class="acts" id="mActs"></div></div></div>
+<div class="overlay" id="playerOverlay"><div class="modal" style="max-width:760px;width:auto"><div id="playerBody" style="text-align:center"></div><div class="foot"><button id="playerClose">关闭</button></div></div></div>
 <div class="overlay" id="detailOverlay"><div class="modal"><h3>详细信息</h3><div id="dBody"></div><div class="foot"><button id="dClose">关闭</button></div></div></div>
 <div class="overlay" id="renameOverlay"><div class="modal"><h3>重命名</h3><input id="renameInput" placeholder="新文件名"><div class="foot"><button id="renCancel">取消</button><button class="pri" id="renSave">保存</button></div></div></div>
 <div class="overlay" id="moveOverlay"><div class="modal"><h3 id="moveTitle">移动到相册</h3><div class="acts" id="moveActs"></div><div class="foot"><button id="moveCancel">取消</button></div></div></div>
@@ -750,7 +751,7 @@ function renderRecent(){var box=$("recent");if(!box)return;var arr=ALLFILES.slic
   if(!arr.length){box.innerHTML="<div class='muted'>还没有文件，去上传第一个吧</div>";return}
   arr.forEach(function(im){var t=document.createElement("div");t.className="rtile";
     if(im.kind==="image"){var g=document.createElement("img");g.src=im.thumb;g.loading="lazy";t.appendChild(g)}else{var fi=document.createElement("div");fi.className="rfi";fi.textContent=typeIcon(typeOf(im));t.appendChild(fi)}
-    t.onclick=function(){if(im.kind==="image")openLightboxAll(im);else window.open(im.link,"_blank")};box.appendChild(t);});
+    t.onclick=function(){if(im.kind==="image")openLightboxAll(im);else{var tt=typeOf(im);(tt==="video"||tt==="audio")?openPlayer(im):window.open(im.link,"_blank")}};box.appendChild(t);});
 }
 function navTo(spec){clearSel();closeDrawer();closeOverlays();
   if(spec.view)VIEW=spec.view;else if(spec.type){VIEW="files";NAV={type:spec.type}}else{VIEW="files";NAV={album:spec.album,name:spec.name}}
@@ -780,7 +781,7 @@ function renderFiles(){var isAlbum=NAV.album!=null&&NAV.type==null;$("ftitle").t
     var chk=document.createElement("span");chk.className="chk";chk.textContent="✓";chk.onclick=function(e){e.stopPropagation();toggleSel(im.id)};t.appendChild(chk);
     var more=document.createElement("span");more.className="more";more.textContent="⋯";more.onclick=function(e){e.stopPropagation();openMenu(im)};t.appendChild(more);
     var cap=document.createElement("div");cap.className="cap";cap.innerHTML="<div class='nm'>"+esc(im.filename||"文件")+"</div><div class='tm'>"+relTime(im.uploaded_at)+"</div>";t.appendChild(cap);
-    t.onclick=function(){if(im.kind==="image")openLightbox(im);else window.open(im.link,"_blank")};g.appendChild(t);});
+    t.onclick=function(){if(im.kind==="image")openLightbox(im);else{var tt=typeOf(im);(tt==="video"||tt==="audio")?openPlayer(im):window.open(im.link,"_blank")}};g.appendChild(t);});
 }
 function toggleSel(id){if(SEL[id])delete SEL[id];else SEL[id]=true;updateSelUI()}
 function selIds(){return Object.keys(SEL).map(Number)}
@@ -930,6 +931,8 @@ function uploadFiles(files){files=Array.prototype.slice.call(files||[]);if(!file
   }
   acquireWake();toast("上传中…");updProgress();pump();
 }
+function openPlayer(im){var b=$("playerBody"),t=typeOf(im),el;if(t==="video"){el=document.createElement("video");el.style.cssText="max-width:100%;max-height:70vh;border-radius:8px;background:#000";el.setAttribute("playsinline","")}else{el=document.createElement("audio");el.style.cssText="width:100%"}el.controls=true;el.autoplay=true;el.src=im.link;b.innerHTML="";var ti=document.createElement("div");ti.className="muted";ti.style.cssText="margin-bottom:10px;word-break:break-all";ti.textContent=im.filename||"";b.appendChild(ti);b.appendChild(el);show("playerOverlay")}
+function closePlayer(){var b=$("playerBody"),m=b.querySelector("video,audio");if(m){try{m.pause()}catch(e){}m.removeAttribute("src");try{m.load()}catch(e){}}b.innerHTML="";hide("playerOverlay")}
 function openLightbox(im){var imgs=currentList().filter(function(x){return x.kind==="image"});LB=imgs;LBI=0;for(var k=0;k<LB.length;k++){if(LB[k].id===im.id){LBI=k;break}}if(!LB.length)return;$("lbImg").src=LB[LBI].link;show("lightbox")}
 function openLightboxAll(im){var imgs=ALLFILES.filter(function(x){return x.kind==="image"});LB=imgs;LBI=0;for(var k=0;k<LB.length;k++){if(LB[k].id===im.id){LBI=k;break}}if(!LB.length)return;$("lbImg").src=LB[LBI].link;show("lightbox")}
 function lbNav(d){if(!LB.length)return;LBI=(LBI+d+LB.length)%LB.length;$("lbImg").src=LB[LBI].link}
@@ -938,6 +941,7 @@ $("lightbox").addEventListener("click",function(e){if(e.target.id==="lightbox")h
 function closeOverlays(){var ov=document.querySelectorAll(".overlay");for(var i=0;i<ov.length;i++)ov[i].classList.remove("show")}
 ["menuOverlay","detailOverlay","renameOverlay","moveOverlay","setOverlay"].forEach(function(id){$(id).addEventListener("click",function(e){if(e.target===this)this.classList.remove("show")})});
 $("dClose").onclick=function(){hide("detailOverlay")};$("renCancel").onclick=function(){hide("renameOverlay")};$("renSave").onclick=doRename;
+$("playerClose").onclick=closePlayer;$("playerOverlay").addEventListener("click",function(e){if(e.target===this)closePlayer()});
 $("renameInput").addEventListener("keydown",function(e){if(e.key==="Enter")doRename()});
 $("moveCancel").onclick=function(){hide("moveOverlay")};$("setClose").onclick=function(){hide("setOverlay")};$("setLogout").onclick=function(){hide("setOverlay");logout()};
 $("goUpload").addEventListener("click",function(){navTo({view:"upload"})});$("recMore").addEventListener("click",function(){navTo({type:"all"})});
