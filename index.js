@@ -702,6 +702,7 @@ const PAGE_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"
 <div class="overlay" id="moveOverlay"><div class="modal"><h3 id="moveTitle">移动到相册</h3><div class="acts" id="moveActs"></div><div class="foot"><button id="moveCancel">取消</button></div></div></div>
 <div class="overlay" id="setOverlay"><div class="modal"><h3>设置</h3><div id="setBody"></div><div class="foot"><button id="setLogout" class="danger">退出登录</button><button id="setClose">关闭</button></div></div></div>
 <div class="overlay" id="confirmOverlay"><div class="modal"><h3>请确认</h3><div class="muted" id="cfMsg" style="margin:8px 0 4px;white-space:pre-line;color:var(--ink)"></div><div class="foot"><button id="cfNo">取消</button><button class="pri danger" id="cfYes">确定</button></div></div></div>
+<div class="overlay" id="dupOverlay"><div class="modal"><h3>已有同名文件</h3><div class="muted" id="dupMsg" style="margin:8px 0;color:var(--ink);word-break:break-all"></div><label class="chk" style="display:flex;gap:6px;align-items:center;font-size:.85rem;color:var(--mut);margin:6px 0 2px;cursor:pointer"><input type="checkbox" id="dupAll" style="width:auto"> 本次剩余同名都这样处理</label><div class="foot" style="flex-wrap:wrap"><button id="dupSkip">跳过</button><button id="dupKeep">保留两个</button><button class="pri" id="dupOver">覆盖</button></div></div></div>
 <div class="toast" id="toast"></div>
 <script nonce="__CSP_NONCE__">
 var TOKEN=sessionStorage.getItem("cloud_token")||"";
@@ -826,6 +827,10 @@ var _cfRes=null;
 function uiConfirm(msg){return new Promise(function(res){$("cfMsg").textContent=msg;_cfRes=res;show("confirmOverlay")})}
 $("cfYes").onclick=function(){hide("confirmOverlay");var r=_cfRes;_cfRes=null;if(r)r(true)};
 $("cfNo").onclick=function(){hide("confirmOverlay");var r=_cfRes;_cfRes=null;if(r)r(false)};
+var _dupRes=null;
+function uiChoose(name){return new Promise(function(res){$("dupMsg").textContent="「"+name+"」已存在，要怎么处理？";$("dupAll").checked=false;_dupRes=res;show("dupOverlay")})}
+function _dupPick(action){hide("dupOverlay");var r=_dupRes;_dupRes=null;if(r)r({action:action,applyAll:$("dupAll").checked})}
+$("dupSkip").onclick=function(){_dupPick("skip")};$("dupKeep").onclick=function(){_dupPick("keep")};$("dupOver").onclick=function(){_dupPick("overwrite")};
 function delItems(ids){if(!ids.length)return;uiConfirm("删除选中的 "+ids.length+" 个文件？不可恢复。").then(function(ok){if(!ok)return;var i=0;(function nx(){if(i>=ids.length){clearSel();reloadFiles();toast("已删除");return}api("/api/file/"+ids[i],{method:"DELETE"}).then(function(){i++;nx()}).catch(function(e){toast(e.message);i++;nx()})})()})}
 function reloadFiles(){return Promise.all([loadFiles(),loadAlbums()]).then(function(){renderNav();renderFiles();loadMe();renderCatBars()})}
 function newAlbum(){var name=prompt("相册名字");if(!name)return;api("/api/albums",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name:name})}).then(function(){return loadAlbums()}).then(function(){renderNav();toast("已新建相册")}).catch(function(e){toast(e.message)})}
@@ -884,7 +889,7 @@ function multipartUpload(file,albumId,onprog,ctrl){var CHUNK=40*1024*1024,sig=fi
     return loop(1).catch(function(e){if(ctrl&&ctrl.canceled)mpuClear(sig);throw e});
   }).then(function(){return api("/api/mpu/complete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({key:st.key,uploadId:st.uploadId,parts:st.parts,filename:file.name,mime:file.type||"application/octet-stream",size:file.size,album_id:albumId})})}).then(function(r){mpuClear(sig);return r});
 }
-function uploadFiles(files){files=Array.prototype.slice.call(files||[]);if(!files.length)return;navTo({view:"upload"});var pc=$("progress");pc.classList.remove("hide");pc.innerHTML="";var doCompress=$("cmp").checked,albumId=(NAV.album!=null&&NAV.type==null)?NAV.album:null,done=0,fail=0,canceled=0;
+function uploadFiles(files){files=Array.prototype.slice.call(files||[]);if(!files.length)return;navTo({view:"upload"});var pc=$("progress");pc.classList.remove("hide");pc.innerHTML="";var doCompress=$("cmp").checked,albumId=(NAV.album!=null&&NAV.type==null)?NAV.album:null,done=0,fail=0,canceled=0,skipped=0,overlapChoice=null;
   var batchPaused=false,batchCanceled=false,actives=[],wl=null,CONC=3,total=files.length;
   function mkbtn(txt,cls,fn){var b=document.createElement("button");b.className=cls;b.textContent=txt;b.onclick=fn;return b}
   function acquireWake(){try{if(navigator.wakeLock&&!wl)navigator.wakeLock.request("screen").then(function(l){wl=l}).catch(function(){})}catch(e){}}
@@ -899,7 +904,13 @@ function uploadFiles(files){files=Array.prototype.slice.call(files||[]);if(!file
   var obar=document.createElement("div");obar.style.cssText="flex:1 0 100%;height:6px;background:rgba(255,255,255,.1);border-radius:3px;overflow:hidden";var obi=document.createElement("i");obi.style.cssText="display:block;height:100%;width:0;background:linear-gradient(90deg,#6d5efc,#a855f7);transition:width .25s";obar.appendChild(obi);head.appendChild(obar);
   pc.appendChild(head);
   if(files.length<2)head.style.display="none";
-  function updProgress(){var s=done+fail+canceled;obi.style.width=(total?Math.round(s/total*100):0)+"%";leftTxt.textContent="已处理 "+s+" / "+total+(fail?("，失败 "+fail):"")}
+  function updProgress(){var s=done+fail+canceled+skipped;obi.style.width=(total?Math.round(s/total*100):0)+"%";leftTxt.textContent="已处理 "+s+" / "+total+(fail?("，失败 "+fail):"")+(skipped?("，跳过 "+skipped):"")}
+  // 同名检测：同相册内文件名完全相同才算同名
+  function findDup(f){for(var i=0;i<ALLFILES.length;i++){var x=ALLFILES[i];if(x.filename===f.name&&(x.album_id||null)===(albumId||null))return x}return null}
+  function resolveOverlap(f){var dup=findDup(f);if(!dup)return Promise.resolve({mode:"go"});function apply(a){return a==="skip"?{mode:"skip"}:a==="overwrite"?{mode:"overwrite",dupId:dup.id}:{mode:"go"}}if(overlapChoice)return Promise.resolve(apply(overlapChoice));return uiChoose(f.name).then(function(r){if(r.applyAll)overlapChoice=r.action;return apply(r.action)})}
+  var decisions={};
+  function prepare(i){if(i>=total)return Promise.resolve();return resolveOverlap(files[i]).then(function(r){decisions[i]=r;return prepare(i+1)})}
+  function processOne(i){var r=decisions[i]||{mode:"go"};if(r.mode==="skip"){if(items[i])items[i].remove();return Promise.resolve("skip")}var pre=r.mode==="overwrite"?api("/api/file/"+r.dupId,{method:"DELETE"}).catch(function(){}):Promise.resolve();return pre.then(function(){return attempt(files[i],items[i]).then(function(){return "done"}).catch(function(x){return (x&&x.canceled)?"cancel":"fail"})})}
   function refreshLeft(){updProgress()}
   // 一开始就把所有文件列成"排队中"，让你看到还剩哪些没传
   var items=files.map(function(f){var item=document.createElement("div");item.className="pitem";item.style.opacity=".55";item.innerHTML="<div class='pn'><span>"+esc(f.name)+"</span><span class='pct'>排队中</span></div><div class='pbar'><i></i></div><div class='pacts'></div>";pc.appendChild(item);return item});
@@ -920,16 +931,16 @@ function uploadFiles(files){files=Array.prototype.slice.call(files||[]);if(!file
     });
   }
   function waitPause(){return new Promise(function(res){(function chk(){if(!batchPaused||batchCanceled)return res();setTimeout(chk,250)})()})}
-  var finished=false;function finish(){if(finished)return;finished=true;updProgress();reloadFiles();toast("完成 "+done+" 个"+(fail?("，失败 "+fail+"（下方可重试）"):"")+(canceled?("，取消 "+canceled):""));setTimeout(maybeHide,900)}
+  var finished=false;function finish(){if(finished)return;finished=true;updProgress();reloadFiles();toast("完成 "+done+" 个"+(fail?("，失败 "+fail+"（下方可重试）"):"")+(canceled?("，取消 "+canceled):"")+(skipped?("，跳过 "+skipped):""));setTimeout(maybeHide,900)}
   // 并发上传池：同时传 CONC 个，快好几倍
   var idx=0,running=0;
-  function settle(res){if(res==="done")done++;else if(res==="cancel")canceled++;else fail++;updProgress();running--;pump()}
+  function settle(res){if(res==="done")done++;else if(res==="cancel")canceled++;else if(res==="skip")skipped++;else fail++;updProgress();running--;pump()}
   function pump(){
     if(batchCanceled){for(var j=idx;j<total;j++){if(items[j])items[j].remove()}idx=total;if(running<=0)finish();return}
-    while(running<CONC&&idx<total){(function(i){running++;waitPause().then(function(){if(batchCanceled){running--;pump();return}attempt(files[i],items[i]).then(function(){settle("done")}).catch(function(x){settle(x&&x.canceled?"cancel":"fail")})})})(idx++)}
+    while(running<CONC&&idx<total){(function(i){running++;waitPause().then(function(){if(batchCanceled){running--;pump();return}processOne(i).then(function(res){settle(res)})})})(idx++)}
     if(idx>=total&&running<=0)finish();
   }
-  acquireWake();toast("上传中…");updProgress();pump();
+  acquireWake();toast("上传中…");updProgress();prepare(0).then(function(){pump()});
 }
 function openPlayer(im){var b=$("playerBody"),t=typeOf(im),el;if(t==="video"){el=document.createElement("video");el.style.cssText="max-width:100%;max-height:70vh;border-radius:8px;background:#000";el.setAttribute("playsinline","")}else{el=document.createElement("audio");el.style.cssText="width:100%"}el.controls=true;el.autoplay=true;el.src=im.link;b.innerHTML="";var ti=document.createElement("div");ti.className="muted";ti.style.cssText="margin-bottom:10px;word-break:break-all";ti.textContent=im.filename||"";b.appendChild(ti);b.appendChild(el);show("playerOverlay")}
 function closePlayer(){var b=$("playerBody"),m=b.querySelector("video,audio");if(m){try{m.pause()}catch(e){}m.removeAttribute("src");try{m.load()}catch(e){}}b.innerHTML="";hide("playerOverlay")}
