@@ -700,6 +700,7 @@ const PAGE_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"
 <div class="overlay" id="renameOverlay"><div class="modal"><h3>重命名</h3><input id="renameInput" placeholder="新文件名"><div class="foot"><button id="renCancel">取消</button><button class="pri" id="renSave">保存</button></div></div></div>
 <div class="overlay" id="moveOverlay"><div class="modal"><h3 id="moveTitle">移动到相册</h3><div class="acts" id="moveActs"></div><div class="foot"><button id="moveCancel">取消</button></div></div></div>
 <div class="overlay" id="setOverlay"><div class="modal"><h3>设置</h3><div id="setBody"></div><div class="foot"><button id="setLogout" class="danger">退出登录</button><button id="setClose">关闭</button></div></div></div>
+<div class="overlay" id="confirmOverlay"><div class="modal"><h3>请确认</h3><div class="muted" id="cfMsg" style="margin:8px 0 4px;white-space:pre-line;color:var(--ink)"></div><div class="foot"><button id="cfNo">取消</button><button class="pri danger" id="cfYes">确定</button></div></div></div>
 <div class="toast" id="toast"></div>
 <script nonce="__CSP_NONCE__">
 var TOKEN=sessionStorage.getItem("cloud_token")||"";
@@ -820,10 +821,14 @@ function openMove(ids){var box=$("moveActs");box.innerHTML="";
   $("moveTitle").textContent="移动 "+ids.length+" 个到相册";show("moveOverlay");
 }
 function doMove(ids,albumId){var i=0;(function nx(){if(i>=ids.length){hide("moveOverlay");clearSel();reloadFiles();toast("已移动");return}api("/api/file/"+ids[i]+"/album",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({album_id:albumId})}).then(function(){i++;nx()}).catch(function(e){toast(e.message);i++;nx()})})()}
-function delItems(ids){if(!ids.length)return;if(!confirm("删除选中的 "+ids.length+" 个文件？不可恢复。"))return;var i=0;(function nx(){if(i>=ids.length){clearSel();reloadFiles();toast("已删除");return}api("/api/file/"+ids[i],{method:"DELETE"}).then(function(){i++;nx()}).catch(function(e){toast(e.message);i++;nx()})})()}
+var _cfRes=null;
+function uiConfirm(msg){return new Promise(function(res){$("cfMsg").textContent=msg;_cfRes=res;show("confirmOverlay")})}
+$("cfYes").onclick=function(){hide("confirmOverlay");var r=_cfRes;_cfRes=null;if(r)r(true)};
+$("cfNo").onclick=function(){hide("confirmOverlay");var r=_cfRes;_cfRes=null;if(r)r(false)};
+function delItems(ids){if(!ids.length)return;uiConfirm("删除选中的 "+ids.length+" 个文件？不可恢复。").then(function(ok){if(!ok)return;var i=0;(function nx(){if(i>=ids.length){clearSel();reloadFiles();toast("已删除");return}api("/api/file/"+ids[i],{method:"DELETE"}).then(function(){i++;nx()}).catch(function(e){toast(e.message);i++;nx()})})()})}
 function reloadFiles(){return Promise.all([loadFiles(),loadAlbums()]).then(function(){renderNav();renderFiles();loadMe();renderCatBars()})}
 function newAlbum(){var name=prompt("相册名字");if(!name)return;api("/api/albums",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name:name})}).then(function(){return loadAlbums()}).then(function(){renderNav();toast("已新建相册")}).catch(function(e){toast(e.message)})}
-function delAlbum(id){if(!confirm("删除相册？里面的文件会变成未分组，不会删文件。"))return;api("/api/albums/"+id,{method:"DELETE"}).then(function(){return loadAlbums()}).then(function(){navTo({type:"all"})}).catch(function(e){toast(e.message)})}
+function delAlbum(id){uiConfirm("删除相册？里面的文件会变成未分组，不会删文件。").then(function(ok){if(!ok)return;api("/api/albums/"+id,{method:"DELETE"}).then(function(){return loadAlbums()}).then(function(){navTo({type:"all"})}).catch(function(e){toast(e.message)})})}
 function openSettings(){var b=$("setBody");b.innerHTML="<div class='muted' style='padding:10px 0'>加载中…</div>";closeDrawer();show("setOverlay");
   api("/api/me").then(function(d){
     b.innerHTML="";
@@ -849,8 +854,8 @@ function openLimitEditor(d){var b=$("setBody");b.innerHTML="";
   $("limSave").onclick=function(){
     var gb=parseFloat($("limGB").value);
     if(!(gb>=1)){toast("请输入至少 1 GB");return}
-    if(gb>10 && !confirm("你要把上限设为 "+gb+" GB。超过 10GB 的部分，Cloudflare 会从你自己的卡扣费。确认放开吗？")) return;
-    api("/api/limit",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({gb:gb})}).then(function(){toast("容量上限已更新为 "+gb+" GB");loadMe();openSettings()}).catch(function(e){toast(e.message)});
+    var go=function(){api("/api/limit",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({gb:gb})}).then(function(){toast("容量上限已更新为 "+gb+" GB");loadMe();openSettings()}).catch(function(e){toast(e.message)})};
+    if(gb>10){uiConfirm("你要把上限设为 "+gb+" GB。超过 10GB 的部分，Cloudflare 会从你自己的卡扣费。确认放开吗？").then(function(ok){if(ok)go()})}else{go()}
   };
 }
 var drop=$("drop"),fileInput=$("file");
@@ -888,7 +893,7 @@ function uploadFiles(files){files=Array.prototype.slice.call(files||[]);if(!file
   var head=document.createElement("div");head.style.cssText="display:flex;gap:8px;align-items:center;position:sticky;top:0;background:#0b0d15;padding:8px 2px;z-index:2;flex-wrap:wrap;margin-bottom:6px";
   var leftTxt=document.createElement("span");leftTxt.className="muted";leftTxt.style.marginRight="auto";head.appendChild(leftTxt);
   var pauseAll=mkbtn("⏸ 全部暂停","pbtn",function(){batchPaused=!batchPaused;pauseAll.textContent=batchPaused?"▶ 全部继续":"⏸ 全部暂停";actives.forEach(function(c){c.paused=batchPaused})});
-  var cancelAll=mkbtn("✕ 全部取消","pbtn del",function(){if(!confirm("取消并清空所有还没完成的上传？"))return;batchCanceled=true;actives.forEach(function(c){c.canceled=true;if(c.abort)c.abort()});var its=pc.querySelectorAll(".pitem");for(var i=0;i<its.length;i++)its[i].remove();updProgress();releaseWake();pc.classList.add("hide")});
+  var cancelAll=mkbtn("✕ 全部取消","pbtn del",function(){uiConfirm("取消并清空所有还没完成的上传？").then(function(ok){if(!ok)return;batchCanceled=true;actives.forEach(function(c){c.canceled=true;if(c.abort)c.abort()});var its=pc.querySelectorAll(".pitem");for(var i=0;i<its.length;i++)its[i].remove();updProgress();releaseWake();pc.classList.add("hide")})});
   head.appendChild(pauseAll);head.appendChild(cancelAll);
   var obar=document.createElement("div");obar.style.cssText="flex:1 0 100%;height:6px;background:rgba(255,255,255,.1);border-radius:3px;overflow:hidden";var obi=document.createElement("i");obi.style.cssText="display:block;height:100%;width:0;background:linear-gradient(90deg,#6d5efc,#a855f7);transition:width .25s";obar.appendChild(obi);head.appendChild(obar);
   pc.appendChild(head);
